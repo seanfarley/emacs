@@ -1,6 +1,6 @@
 /* Implementation of GUI terminal on the Mac OS.
    Copyright (C) 2000-2008  Free Software Foundation, Inc.
-   Copyright (C) 2009-2016  YAMAMOTO Mitsuharu
+   Copyright (C) 2009-2017  YAMAMOTO Mitsuharu
 
 This file is part of GNU Emacs Mac port.
 
@@ -4199,10 +4199,16 @@ mac_handle_visibility_change (struct frame *f)
 void
 x_make_frame_visible (struct frame *f)
 {
+  Lisp_Object focus_frame = Qnil;
+
   block_input ();
 
   if (! FRAME_VISIBLE_P (f))
     {
+      if (!(mac_operating_system_version.major == 10
+	    && mac_operating_system_version.minor <= 11))
+	XSETFRAME (focus_frame, mac_focus_frame (FRAME_DISPLAY_INFO (f)));
+
       /* We test FRAME_GARBAGED_P here to make sure we don't
 	 call x_set_offset a second time
 	 if we get to x_make_frame_visible a second time
@@ -4218,6 +4224,14 @@ x_make_frame_visible (struct frame *f)
     }
 
   XFlush (FRAME_MAC_DISPLAY (f));
+
+  if (FRAMEP (focus_frame)
+      && EQ (Fframe_parameter (focus_frame, Qfullscreen), Qfullscreen))
+    {
+      unblock_input ();
+
+      return;
+    }
 
   /* Synchronize to ensure Emacs knows the frame is visible
      before we do anything else.  We do this loop with input not blocked

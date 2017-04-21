@@ -1,5 +1,5 @@
 /* Functions for GUI implemented with Cocoa AppKit on the Mac OS.
-   Copyright (C) 2008-2016  YAMAMOTO Mitsuharu
+   Copyright (C) 2008-2017  YAMAMOTO Mitsuharu
 
 This file is part of GNU Emacs Mac port.
 
@@ -314,6 +314,10 @@ NSSizeToCGSize (NSSize nssize)
 - (NSEvent *)mouseEventByChangingType:(NSEventType)type
 			  andLocation:(NSPoint)location
 {
+  NSInteger clickCount = [self clickCount];
+
+  /* Dragging via Screen Sharing.app sets clickCount to 0, and it
+     disables updating screen during resize on macOS 10.12.  */
   return [NSEvent
 	   mouseEventWithType:type location:location
 		modifierFlags:[self modifierFlags]
@@ -324,7 +328,8 @@ NSSizeToCGSize (NSSize nssize)
 #else
 		      context:[self context]
 #endif
-		  eventNumber:[self eventNumber] clickCount:[self clickCount]
+		  eventNumber:[self eventNumber]
+		   clickCount:(clickCount ? clickCount : 1)
 		     pressure:[self pressure]];
 }
 
@@ -1839,8 +1844,8 @@ static EventRef peek_if_next_event_activates_menu_bar (void);
 	  }
 
 	mac_cgevent_to_input_event (cgevent, &inev);
-
-	[self storeEvent:&inev];
+	if (inev.kind != NO_EVENT)
+	  [self storeEvent:&inev];
       }
       break;
 
@@ -5641,8 +5646,8 @@ static int mac_event_to_emacs_modifiers (NSEvent *);
   inputEvent.arg = Qnil;
   XSETFRAME (inputEvent.frame_or_window, f);
   mac_cgevent_to_input_event (cgevent, &inputEvent);
-
-  [self sendAction:action to:target];
+  if (inputEvent.kind != NO_EVENT)
+    [self sendAction:action to:target];
 }
 
 static OSStatus
@@ -8471,8 +8476,11 @@ mac_run_loop_run_once (EventTimeout timeout)
   /* On macOS 10.12, the application sometimes becomes unresponsive to
      Dock icon clicks (though it reacts to Command-Tab) if we directly
      run a run loop and the application windows are covered by other
-     applications for a while.  */
-  if (timeout && ![NSApp isRunning])
+     applications for a while.  On the other hand, running application
+     seems to cause early exit from the run loop and thus waste of CPU
+     time on Mac OS X 10.7 - OS X 10.9 if tool bars are shown.  */
+  if (!(floor (NSAppKitVersionNumber) <= NSAppKitVersionNumber10_9)
+      && timeout && ![NSApp isRunning])
     [NSApp runTemporarilyWithBlock:^{
 	[[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode
 				 beforeDate:expiration];
@@ -9355,11 +9363,8 @@ static NSString *localizedMenuTitleForEdit, *localizedMenuTitleForHelp;
 	     is set when it is not a key equivalent.  But we keep this
 	     for binary compatibility.
 	     Update: this is necessary for passing Control-Tab to
-	     Emacs on Mac OS X 10.5 and later.
-	     Update: don't pass power button events (keyCode == 127)
-	     on OS X 10.9 and later.  */
-	  if ([theEvent keyCode] != 127)
-	    [firstResponder keyDown:theEvent];
+	     Emacs on Mac OS X 10.5 and later.  */
+	  [firstResponder keyDown:theEvent];
 
 	  return YES;
 	}
@@ -10815,7 +10820,8 @@ update_dragged_types (void)
 Lisp_Object
 mac_dnd_default_known_types (void)
 {
-  return list3 ([NSFilenamesPboardType UTF8LispString],
+  return list4 ([NSFilenamesPboardType UTF8LispString],
+		[NSURLPboardType UTF8LispString],
 		[NSStringPboardType UTF8LispString],
 		[NSTIFFPboardType UTF8LispString]);
 }
