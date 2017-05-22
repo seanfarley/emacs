@@ -24698,6 +24698,20 @@ set_glyph_string_background_width (struct glyph_string *s, int start, int last_x
 }
 
 
+/* Return glyph string that shares background with glyph string S and
+   whose `background_width' member has been set.  */
+
+static struct glyph_string *
+glyph_string_containing_background_width (struct glyph_string *s)
+{
+  if (s->cmp)
+    while (s->cmp_from)
+      s = s->prev;
+
+  return s;
+}
+
+
 /* Compute overhangs and x-positions for glyph string S and its
    predecessors, or successors.  X is the starting x-position for S.
    BACKWARD_P non-zero means process predecessors.  */
@@ -24711,7 +24725,8 @@ compute_overhangs_and_x (struct glyph_string *s, int x, int backward_p)
 	{
 	  if (FRAME_RIF (s->f)->compute_glyph_string_overhangs)
 	    FRAME_RIF (s->f)->compute_glyph_string_overhangs (s);
-	  x -= s->width;
+	  if (!s->cmp || s->cmp_to == s->cmp->glyph_len)
+	    x -= s->width;
 	  s->x = x;
 	  s = s->prev;
 	}
@@ -24723,7 +24738,8 @@ compute_overhangs_and_x (struct glyph_string *s, int x, int backward_p)
 	  if (FRAME_RIF (s->f)->compute_glyph_string_overhangs)
 	    FRAME_RIF (s->f)->compute_glyph_string_overhangs (s);
 	  s->x = x;
-	  x += s->width;
+	  if (!s->cmp || s->cmp_to == s->cmp->glyph_len)
+	    x += s->width;
 	  s = s->next;
 	}
     }
@@ -25025,7 +25041,10 @@ draw_glyphs (struct window *w, int x, struct glyph_row *row,
   i = start;
   BUILD_GLYPH_STRINGS (i, end, head, tail, hl, x, last_x);
   if (tail)
-    x_reached = tail->x + tail->background_width;
+    {
+      s = glyph_string_containing_background_width (tail);
+      x_reached = s->x + s->background_width;
+    }
   else
     x_reached = x;
 
@@ -25180,6 +25199,9 @@ draw_glyphs (struct window *w, int x, struct glyph_row *row,
 	  compute_overhangs_and_x (h, tail->x + tail->width, 0);
 	  append_glyph_string_lists (&head, &tail, h, t);
 	}
+      tail = glyph_string_containing_background_width (tail);
+      if (clip_tail)
+	clip_tail = glyph_string_containing_background_width (clip_tail);
       if (clip_head || clip_tail)
 	for (s = head; s; s = s->next)
 	  {

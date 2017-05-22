@@ -1,4 +1,21 @@
+* emacs-24.5-mac-5.22 (2017-05-22)
+
+** Fixed bugs
+
+*** call-process(-region) hangs occasionally.  This is a regression
+introduced in the previous version.
+Reported by Andreas Fuchs.
+
+*** Multi-font compositions may be displayed wrong.
+Apply a fix for Bug#26742.
+
+** Improvements
+
+*** Update emoji data to UTS #51 version 5.0.
+
+
 * emacs-24.5-mac-5.21 (2017-04-22)
+http://lists.gnu.org/archive/html/emacs-devel/2017-04/msg00626.html
 
 ** Fixed bugs
 
