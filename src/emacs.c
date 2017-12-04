@@ -1569,7 +1569,6 @@ Using an Emacs configured with --with-x-toolkit=lucid does not have this problem
       syms_of_xfns ();
       syms_of_xmenu ();
       syms_of_fontset ();
-      syms_of_xwidget ();
       syms_of_xsettings ();
 #ifdef HAVE_X_SM
       syms_of_xsmfns ();
@@ -1652,6 +1651,10 @@ Using an Emacs configured with --with-x-toolkit=lucid does not have this problem
       syms_of_w32notify ();
 #endif /* HAVE_W32NOTIFY */
 #endif /* WINDOWSNT */
+
+#ifdef HAVE_XWIDGETS
+      syms_of_xwidget ();
+#endif /* HAVE_XWIDGETS */
 
       syms_of_threads ();
       syms_of_profiler ();

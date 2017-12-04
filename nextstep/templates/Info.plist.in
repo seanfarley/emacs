@@ -1,3 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
 Copyright (C) 2008-2019 Free Software Foundation, Inc.
@@ -674,8 +676,16 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.
 		</dict>
 	</array>
 	<key>NSAppleScriptEnabled</key>
-	<string>YES</string>
         <key>NSAppleEventsUsageDescription</key>
+        <string>Emacs requires permission to send AppleEvents to other applications.</string>
+        <!-- For xwidget webkit to browse remote url,
+             but this set no restriction at all.  Consult apple's documentation
+             for detail information about `NSApplicationDefinedMask'. -->
+        <key>NSAppTransportSecurity</key>
+        <dict>
+          <key>NSAllowsArbitraryLoads</key>
+          <true/>
+        </dict>
         <string>Emacs requires permission to send AppleEvents to other applications.</string>
 </dict>
 </plist>
