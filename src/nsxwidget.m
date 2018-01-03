@@ -25,7 +25,7 @@ along with GNU Emacs.  If not, see <http://www.gnu.org/licenses/>.  */
 #include "dispextern.h"
 #include "buffer.h"
 #include "frame.h"
-#include "nsterm.h"
+#include "macterm.h"
 #include "xwidget.h"
 
 /* Defined in 'xwidget.c'.  */
@@ -42,7 +42,8 @@ void store_xwidget_js_callback_event (struct xwidget *xw,
                                       Lisp_Object proc,
                                       Lisp_Object argument);
 
-#import <AppKit/AppKit.h>
+#include "menu.h"
+#import "macappkit.h"
 #import <WebKit/WebKit.h>
 
 /* Thoughts on NS Cocoa xwidget and webkit2:
@@ -566,7 +567,7 @@ nsxwidget_init_view (struct xwidget_view *xv,
   xw->xv = xv; /* For 1 to 1 relationship of webkit2.  */
   [xv->xvWindow addSubview:xw->xwWindow];
 
-  xv->emacswindow = FRAME_NS_VIEW (s->f);
+  xv->emacswindow = FRAME_MAC_VIEW (s->f);
   [xv->emacswindow addSubview:xv->xvWindow];
 }
 

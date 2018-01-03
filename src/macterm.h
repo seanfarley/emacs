@@ -184,6 +184,8 @@ extern struct mac_display_info *mac_term_init (Lisp_Object, char *, char *);
 /* The collection of data describing a window on the Mac.  */
 struct mac_output
 {
+  void *view;
+
   /* Here are the Graphics Contexts for the default font.  */
   GC normal_gc;				/* Normal video */
   GC cursor_gc;				/* cursor drawing */
@@ -331,6 +333,8 @@ struct mac_output
 /* This is the `Display *' which frame F is on.  */
 #define FRAME_MAC_DISPLAY(f) (0)
 #define FRAME_X_DISPLAY(f) (0)
+
+#define FRAME_MAC_VIEW(f) ((f)->output_data.mac->view)
 
 /* Mac-specific scroll bar stuff.  */
 

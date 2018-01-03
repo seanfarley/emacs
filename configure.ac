@@ -2740,7 +2740,7 @@ if test "$with_xwidgets" != "no"; then
     EMACS_CHECK_MODULES([WEBKIT], [$WEBKIT_MODULES])
     HAVE_XWIDGETS=$HAVE_WEBKIT
     XWIDGETS_OBJ="xwidget.o"
-  elif test "${NS_IMPL_COCOA}" = "yes"; then
+  elif test "${HAVE_MACGUI}" = "yes"; then
     dnl FIXME: Check framework WebKit2
     dnl WEBKIT_REQUIRED=M.m.p
     WEBKIT_LIBS="-Wl,-framework -Wl,WebKit"
@@ -2748,9 +2748,9 @@ if test "$with_xwidgets" != "no"; then
     HAVE_WEBKIT="yes"
     HAVE_XWIDGETS=$HAVE_WEBKIT
     XWIDGETS_OBJ="xwidget.o"
-    NS_OBJC_OBJ="$NS_OBJC_OBJ nsxwidget.o"
+    MAC_OBJC_OBJ="$MAC_OBJC_OBJ nsxwidget.o"
     dnl Update NS_OBJC_OBJ with added nsxwidget.o
-    AC_SUBST(NS_OBJC_OBJ)
+    AC_SUBST(MAC_OBJC_OBJ)
   else
     AC_MSG_ERROR([xwidgets requested, it requires GTK3 as X window toolkit or macOS Cocoa as window system.])
   fi

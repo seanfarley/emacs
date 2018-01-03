@@ -46,6 +46,7 @@ along with GNU Emacs Mac port.  If not, see <https://www.gnu.org/licenses/>.  */
 #include "atimer.h"
 #include "font.h"
 #include "menu.h"
+#include "xwidget.h"
 
 
 
@@ -2410,6 +2411,10 @@ x_draw_glyph_string (struct glyph_string *s)
     {
     case IMAGE_GLYPH:
       x_draw_image_glyph_string (s);
+      break;
+
+    case XWIDGET_GLYPH:
+      x_draw_xwidget_glyph_string (s);
       break;
 
     case STRETCH_GLYPH:
