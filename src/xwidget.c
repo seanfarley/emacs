@@ -35,7 +35,7 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #if defined (USE_GTK)
 #include <webkit2/webkit2.h>
 #include <JavaScriptCore/JavaScript.h>
-#elif defined (NS_IMPL_COCOA)
+#elif defined (HAVE_MACGUI)
 #include "nsxwidget.h"
 #endif
 
@@ -164,7 +164,7 @@ Returns the newly constructed xwidget, or nil if construction fails.  */)
 
       unblock_input ();
     }
-#elif defined (NS_IMPL_COCOA)
+#elif defined (HAVE_MACGUI)
   nsxwidget_init (xw);
 #endif
 
@@ -620,7 +620,7 @@ xwidget_init_view (struct xwidget *xww,
   xv->x = x;
   xv->y = y;
   gtk_widget_show_all (xv->widgetwindow);
-#elif defined (NS_IMPL_COCOA)
+#elif defined (HAVE_MACGUI)
   nsxwidget_init_view (xv, xww, s, x, y);
 #endif
 
@@ -654,7 +654,7 @@ x_draw_xwidget_glyph_string (struct glyph_string *s)
 #if defined (USE_GTK)
   if (!xv)
     xv = xwidget_init_view (xww, s, x, y);
-#elif defined (NS_IMPL_COCOA)
+#elif defined (HAVE_MACGUI)
   if (!xv)
     {
       /* Enforce 1 to 1, model and view for macOS Cocoa webkit2.  */
@@ -718,7 +718,7 @@ x_draw_xwidget_glyph_string (struct glyph_string *s)
 #if defined (USE_GTK)
       gtk_fixed_move (GTK_FIXED (FRAME_GTK_WIDGET (s->f)),
                       xv->widgetwindow, x + clip_left, y + clip_top);
-#elif defined (NS_IMPL_COCOA)
+#elif defined (HAVE_MACGUI)
       nsxwidget_move_view (xv, x + clip_left, y + clip_top);
 #endif
     }
@@ -737,7 +737,7 @@ x_draw_xwidget_glyph_string (struct glyph_string *s)
                                    clip_bottom - clip_top);
       gtk_fixed_move (GTK_FIXED (xv->widgetwindow), xv->widget, -clip_left,
                       -clip_top);
-#elif defined (NS_IMPL_COCOA)
+#elif defined (HAVE_MACGUI)
       nsxwidget_resize_view (xv, clip_right - clip_left,
                              clip_bottom - clip_top);
       nsxwidget_move_widget_in_view (xv, -clip_left, -clip_top);
@@ -758,7 +758,7 @@ x_draw_xwidget_glyph_string (struct glyph_string *s)
 #if defined (USE_GTK)
       gtk_widget_queue_draw (xv->widgetwindow);
       gtk_widget_queue_draw (xv->widget);
-#elif defined (NS_IMPL_COCOA)
+#elif defined (HAVE_MACGUI)
       nsxwidget_set_needsdisplay (xv);
 #endif
     }
@@ -769,7 +769,7 @@ xwidget_is_web_view (struct xwidget *xw)
 {
 #if defined (USE_GTK)
   return xw->widget_osr != NULL && WEBKIT_IS_WEB_VIEW (xw->widget_osr);
-#elif defined (NS_IMPL_COCOA)
+#elif defined (HAVE_MACGUI)
   return nsxwidget_is_web_view (xw);
 #endif
 }
@@ -794,7 +794,7 @@ DEFUN ("xwidget-webkit-uri",
 #if defined (USE_GTK)
   WebKitWebView *wkwv = WEBKIT_WEB_VIEW (xw->widget_osr);
   return build_string (webkit_web_view_get_uri (wkwv));
-#elif defined (NS_IMPL_COCOA)
+#elif defined (HAVE_MACGUI)
   return nsxwidget_webkit_uri (xw);
 #endif
 }
@@ -809,7 +809,7 @@ DEFUN ("xwidget-webkit-title",
 #if defined (USE_GTK)
   WebKitWebView *wkwv = WEBKIT_WEB_VIEW (xw->widget_osr);
   return build_string (webkit_web_view_get_title (wkwv));
-#elif defined (NS_IMPL_COCOA)
+#elif defined (HAVE_MACGUI)
   return nsxwidget_webkit_title (xw);
 #endif
 }
@@ -824,7 +824,7 @@ DEFUN ("xwidget-webkit-goto-uri",
   CHECK_STRING (uri);
 #if defined (USE_GTK)
   webkit_web_view_load_uri (WEBKIT_WEB_VIEW (xw->widget_osr), SSDATA (uri));
-#elif defined (NS_IMPL_COCOA)
+#elif defined (HAVE_MACGUI)
   nsxwidget_webkit_goto_uri (xw, SSDATA (uri));
 #endif
   return Qnil;
@@ -845,7 +845,7 @@ DEFUN ("xwidget-webkit-goto-history",
   case 0: webkit_web_view_reload (wkwv); break;
   case 1: webkit_web_view_go_forward (wkwv); break;
   }
-#elif defined (NS_IMPL_COCOA)
+#elif defined (HAVE_MACGUI)
   nsxwidget_webkit_goto_history (xw, XFASTINT (rel_pos));
 #endif
   return Qnil;
@@ -867,7 +867,7 @@ referenced by XWIDGET.  */)
         (WEBKIT_WEB_VIEW (xw->widget_osr),
          webkit_web_view_get_zoom_level
          (WEBKIT_WEB_VIEW (xw->widget_osr)) + zoom_change);
-#elif defined (NS_IMPL_COCOA)
+#elif defined (HAVE_MACGUI)
       nsxwidget_webkit_zoom (xw, zoom_change);
 #endif
     }
@@ -906,7 +906,7 @@ argument procedure FUN.*/)
                                   SSDATA (script),
                                   NULL, /* cancelable */
                                   callback, callback_arg);
-#elif defined (NS_IMPL_COCOA)
+#elif defined (HAVE_MACGUI)
   nsxwidget_webkit_execute_script (xw, SSDATA (script), fun);
 #endif
   return Qnil;
@@ -936,7 +936,7 @@ DEFUN ("xwidget-resize", Fxwidget_resize, Sxwidget_resize, 3, 3, 0,
       gtk_widget_set_size_request (GTK_WIDGET (xw->widget_osr), xw->width,
                                    xw->height);
     }
-#elif defined (NS_IMPL_COCOA)
+#elif defined (HAVE_MACGUI)
   nsxwidget_resize (xw);
 #endif
 
@@ -950,7 +950,7 @@ DEFUN ("xwidget-resize", Fxwidget_resize, Sxwidget_resize, 3, 3, 0,
 #if defined (USE_GTK)
               gtk_widget_set_size_request (GTK_WIDGET (xv->widget), xw->width,
                                            xw->height);
-#elif defined (NS_IMPL_COCOA)
+#elif defined (HAVE_MACGUI)
               nsxwidget_resize_view(xv, xw->width, xw->height);
 #endif
             }
@@ -977,7 +977,7 @@ Emacs allocated area accordingly.  */)
   gtk_widget_size_request (XXWIDGET (xwidget)->widget_osr, &requisition);
   return list2 (make_number (requisition.width),
 		make_number (requisition.height));
-#elif defined (NS_IMPL_COCOA)
+#elif defined (HAVE_MACGUI)
   return nsxwidget_get_size(XXWIDGET (xwidget));
 #endif
 }
@@ -1065,7 +1065,7 @@ DEFUN ("delete-xwidget-view",
                                          G_SIGNAL_MATCH_DATA,
                                          0, 0, 0, 0,
                                          xv->widget);
-#elif defined (NS_IMPL_COCOA)
+#elif defined (HAVE_MACGUI)
   nsxwidget_delete_view (xv);
 #endif
 
@@ -1354,7 +1354,7 @@ xwidget_end_redisplay (struct window *w, struct glyph_matrix *matrix)
 		     If not, the code probably needs fixing.  */
 		  eassume (xv);
 		  xwidget_touch (xv);
-#elif defined (NS_IMPL_COCOA)
+#elif defined (HAVE_MACGUI)
                   /* In NS xwidget, xv can be NULL for the second or
                      later views for a model, the result of 1 to 1
                      model view relation enforcement.  */
@@ -1380,7 +1380,7 @@ xwidget_end_redisplay (struct window *w, struct glyph_matrix *matrix)
                 {
 #if defined (USE_GTK)
                   xwidget_show_view (xv);
-#elif defined (NS_IMPL_COCOA)
+#elif defined (HAVE_MACGUI)
                   nsxwidget_show_view (xv);
 #endif
                 }
@@ -1388,7 +1388,7 @@ xwidget_end_redisplay (struct window *w, struct glyph_matrix *matrix)
                 {
 #if defined (USE_GTK)
                   xwidget_hide_view (xv);
-#elif defined (NS_IMPL_COCOA)
+#elif defined (HAVE_MACGUI)
                   nsxwidget_hide_view (xv);
 #endif
                 }
@@ -1416,7 +1416,7 @@ kill_buffer_xwidgets (Lisp_Object buffer)
             gtk_widget_destroy (xw->widget_osr);
             gtk_widget_destroy (xw->widgetwindow_osr);
           }
-#elif defined (NS_IMPL_COCOA)
+#elif defined (HAVE_MACGUI)
         nsxwidget_kill (xw);
 #endif
       }
