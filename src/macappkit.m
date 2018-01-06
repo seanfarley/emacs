@@ -2314,6 +2314,8 @@ static CGRect unset_global_focus_view_frame (void);
     }
   [emacsView setAutoresizingMask:(NSViewMaxXMargin | NSViewMinYMargin
 				  | NSViewWidthSizable | NSViewHeightSizable)];
+
+  FRAME_MAC_VIEW (f) = emacsView;
 }
 
 - (void)setupOverlayView
