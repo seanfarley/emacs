@@ -163,7 +163,7 @@ Returns the newly constructed xwidget, or nil if construction fails.  */)
       unblock_input ();
     }
 #elif defined (HAVE_MACGUI)
-  nsxwidget_init (xw);
+  mac_within_gui(^{nsxwidget_init (xw);});
 #endif
 
   return val;
@@ -614,7 +614,7 @@ xwidget_init_view (struct xwidget *xww,
   xv->y = y;
   gtk_widget_show_all (xv->widgetwindow);
 #elif defined (HAVE_MACGUI)
-  nsxwidget_init_view (xv, xww, s, x, y);
+  mac_within_gui(^{nsxwidget_init_view (xv, xww, s, x, y);});
 #endif
 
   return xv;
@@ -708,7 +708,7 @@ x_draw_xwidget_glyph_string (struct glyph_string *s)
       gtk_fixed_move (GTK_FIXED (FRAME_GTK_WIDGET (s->f)),
                       xv->widgetwindow, x + clip_left, y + clip_top);
 #elif defined (HAVE_MACGUI)
-      nsxwidget_move_view (xv, x + clip_left, y + clip_top);
+      mac_within_gui(^{nsxwidget_move_view (xv, x + clip_left, y + clip_top);});
 #endif
     }
 
@@ -727,9 +727,11 @@ x_draw_xwidget_glyph_string (struct glyph_string *s)
       gtk_fixed_move (GTK_FIXED (xv->widgetwindow), xv->widget, -clip_left,
                       -clip_top);
 #elif defined (HAVE_MACGUI)
-      nsxwidget_resize_view (xv, clip_right - clip_left,
-                             clip_bottom - clip_top);
-      nsxwidget_move_widget_in_view (xv, -clip_left, -clip_top);
+      mac_within_gui(^{
+		      nsxwidget_resize_view (xv, clip_right - clip_left,
+		                             clip_bottom - clip_top);
+		      nsxwidget_move_widget_in_view (xv, -clip_left, -clip_top);
+	      });
 #endif
 
       xv->clip_right = clip_right;
@@ -857,7 +859,7 @@ referenced by XWIDGET.  */)
          webkit_web_view_get_zoom_level
          (WEBKIT_WEB_VIEW (xw->widget_osr)) + zoom_change);
 #elif defined (HAVE_MACGUI)
-      nsxwidget_webkit_zoom (xw, zoom_change);
+      mac_within_gui(^{nsxwidget_webkit_zoom (xw, zoom_change);});
 #endif
     }
   return Qnil;
@@ -896,7 +898,7 @@ argument procedure FUN.*/)
                                   NULL, /* cancelable */
                                   callback, callback_arg);
 #elif defined (HAVE_MACGUI)
-  nsxwidget_webkit_execute_script (xw, SSDATA (script), fun);
+  mac_within_gui(^{nsxwidget_webkit_execute_script (xw, SSDATA (script), fun);});
 #endif
   return Qnil;
 }
@@ -926,7 +928,7 @@ DEFUN ("xwidget-resize", Fxwidget_resize, Sxwidget_resize, 3, 3, 0,
                                    xw->height);
     }
 #elif defined (HAVE_MACGUI)
-  nsxwidget_resize (xw);
+  mac_within_gui(^{nsxwidget_resize (xw);});
 #endif
 
   for (Lisp_Object tail = Vxwidget_view_list; CONSP (tail); tail = XCDR (tail))
@@ -940,7 +942,7 @@ DEFUN ("xwidget-resize", Fxwidget_resize, Sxwidget_resize, 3, 3, 0,
               gtk_widget_set_size_request (GTK_WIDGET (xv->widget), xw->width,
                                            xw->height);
 #elif defined (HAVE_MACGUI)
-              nsxwidget_resize_view(xv, xw->width, xw->height);
+              mac_within_gui(^{nsxwidget_resize_view(xv, xw->width, xw->height);});
 #endif
             }
         }
@@ -1055,7 +1057,7 @@ DEFUN ("delete-xwidget-view",
                                          0, 0, 0, 0,
                                          xv->widget);
 #elif defined (HAVE_MACGUI)
-  nsxwidget_delete_view (xv);
+  mac_within_gui(^{nsxwidget_delete_view (xv);});
 #endif
 
   return Qnil;
@@ -1372,7 +1374,7 @@ xwidget_end_redisplay (struct window *w, struct glyph_matrix *matrix)
 #if defined (USE_GTK)
                   xwidget_show_view (xv);
 #elif defined (HAVE_MACGUI)
-                  nsxwidget_show_view (xv);
+                  mac_within_gui(^{nsxwidget_show_view (xv);});
 #endif
                 }
               else
@@ -1380,7 +1382,7 @@ xwidget_end_redisplay (struct window *w, struct glyph_matrix *matrix)
 #if defined (USE_GTK)
                   xwidget_hide_view (xv);
 #elif defined (HAVE_MACGUI)
-                  nsxwidget_hide_view (xv);
+                  mac_within_gui(^{nsxwidget_hide_view (xv);});
 #endif
                 }
             }
@@ -1408,7 +1410,7 @@ kill_buffer_xwidgets (Lisp_Object buffer)
             gtk_widget_destroy (xw->widgetwindow_osr);
           }
 #elif defined (HAVE_MACGUI)
-        nsxwidget_kill (xw);
+        mac_within_gui(^{nsxwidget_kill (xw);});
 #endif
       }
     }
