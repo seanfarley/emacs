@@ -2524,6 +2524,8 @@ static void mac_move_frame_window_structure_1 (struct frame *, int, int);
   emacsView.layerContentsRedrawPolicy =
     NSViewLayerContentsRedrawOnSetNeedsDisplay;
   emacsView.layerContentsPlacement = NSViewLayerContentsPlacementTopLeft;
+
+  FRAME_MAC_VIEW (f) = emacsView;
 }
 
 - (void)setupOverlayView
