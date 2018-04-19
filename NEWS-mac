@@ -1,4 +1,16 @@
+* emacs-25.3-mac-6.9a (2018-04-19)
+
+** Fixed bugs
+
+*** The file document.icns is missing in the repository.
+Reported by Jose Arroyo.
+
+*** Simultaneous make (-j option) on out-of-tree build may fail to
+copy the executable to mac/Emacs.app/Contents/MacOS/Emacs.
+
+
 * emacs-25.3-mac-6.9 (2018-04-15)
+http://lists.gnu.org/archive/html/emacs-devel/2018-04/msg00405.html
 
 ** Fixed bugs
 
