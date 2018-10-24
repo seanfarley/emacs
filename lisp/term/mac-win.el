@@ -389,9 +389,10 @@ The entries are currently based on emoji-variation-sequences.txt 11.0.")
 \U0001F64F\U0001F6A3\U0001F6B4\U0001F6B5\U0001F6B6\U0001F6C0\U0001F6CC\
 \U0001F918\U0001F919\U0001F91A\U0001F91B\U0001F91C\U0001F91E\U0001F91F\
 \U0001F926\U0001F930\U0001F931\U0001F932\U0001F933\U0001F934\U0001F935\
-\U0001F936\U0001F937\U0001F938\U0001F939\U0001F93D\U0001F93E\U0001F9B8\
-\U0001F9B9\U0001F9D1\U0001F9D2\U0001F9D3\U0001F9D4\U0001F9D5\U0001F9D6\
-\U0001F9D7\U0001F9D8\U0001F9D9\U0001F9DA\U0001F9DB\U0001F9DC\U0001F9DD"))
+\U0001F936\U0001F937\U0001F938\U0001F939\U0001F93D\U0001F93E\U0001F9B5\
+\U0001F9B6\U0001F9B8\U0001F9B9\U0001F9D1\U0001F9D2\U0001F9D3\U0001F9D4\
+\U0001F9D5\U0001F9D6\U0001F9D7\U0001F9D8\U0001F9D9\U0001F9DA\U0001F9DB\
+\U0001F9DC\U0001F9DD"))
   "Groups of characters that are sensitive to emoji modifiers.
 It is an alist of label symbols vs sequences of characters.
 The entries are currently based on emoji-sequences.txt 11.0.")
@@ -831,12 +832,23 @@ language."
          (metadata (image-metadata image)))
     (unless (plist-get metadata 'count)
       (let* ((props (plist-get metadata 'image-io-properties-at-index))
-             (unit (cdr (assoc "ResolutionUnit" (cdr (assoc "{TIFF}" props))))))
-        (when (integerp unit)
-          (setq image `(,@image
-                        :width ,(/ (cdr (assoc "PixelWidth" props)) unit)
-                        :height ,(/ (cdr (assoc "PixelHeight" props)) unit))))))
+             ;; We used to use kCGImagePropertyTIFFResolutionUnit, but
+             ;; this is not correct for screenshots taken with
+             ;; mirroring a Retina display to a non-Retina one.
+             (dpi-width (cdr (assoc "DPIWidth" props)))
+             (dpi-height (cdr (assoc "DPIHeight" props))))
+        (if (numberp dpi-width)
+            (setq image `(,@image
+                          :width ,(round (/ (cdr (assoc "PixelWidth" props))
+                                            (/ dpi-width 72.0))))))
+        (if (numberp dpi-height)
+            (setq image `(,@image
+                          :height ,(round (/ (cdr (assoc "PixelHeight" props))
+                                             (/ dpi-height 72.0))))))))
     (propertize (or text " ") 'display image)))
+
+(defun mac-PDF-to-string (data &optional text)
+  (propertize (or text " ") 'display (create-image data 'image-io t)))
 
 (defun mac-pasteboard-string-to-string (data &optional coding-system)
   (mac-utxt-to-string data coding-system 'utf-8))
@@ -888,13 +900,23 @@ language."
     (if text
 	(remove-text-properties 0 (length text) '(foreign-selection nil) text))
     (with-demoted-errors "mac-selection-value-internal: %S"
-      (let ((tiff-image (gui-get-selection type 'NSTIFFPboardType)))
-        (when tiff-image
-          (remove-text-properties 0 (length tiff-image)
-                                  '(foreign-selection nil) tiff-image)
-          (if text
-              (setq text (list text (mac-TIFF-to-string tiff-image text)))
-            (setq text (mac-TIFF-to-string tiff-image))))))
+      (let ((image-type-converters
+             '(;; For the "Scan Documents" context menu via Continuity
+               ;; Camera on macOS 10.14.
+               (NSPasteboardTypePDF . mac-PDF-to-string)
+               (NSTIFFPboardType . mac-TIFF-to-string)))
+            image-data)
+        (while (and image-type-converters (null image-data))
+          (setq image-data
+                (gui-get-selection type (caar image-type-converters)))
+          (when image-data
+            (remove-text-properties 0 (length image-data)
+                                    '(foreign-selection nil) image-data)
+            (if text
+                (setq text (list text (funcall (cdar image-type-converters)
+                                               image-data text)))
+              (setq text (funcall (cdar image-type-converters) image-data))))
+          (setq image-type-converters (cdr image-type-converters)))))
     text))
 
 (define-obsolete-function-alias 'x-cut-buffer-or-selection-value
@@ -913,7 +935,8 @@ language."
   (put 'NSTIFFPboardType 'mac-pasteboard-data-type
        "NeXT TIFF v4.0 pasteboard type")
   (put 'NSFilenamesPboardType 'mac-pasteboard-data-type
-       "NSFilenamesPboardType"))
+       "NSFilenamesPboardType")
+  (put 'NSPasteboardTypePDF 'mac-pasteboard-data-type "com.adobe.pdf"))
 
 (defun mac-select-convert-to-string (selection type value)
   (let ((str (xselect-convert-to-string selection nil value))
@@ -945,7 +968,7 @@ language."
        '((NSStringPboardType . mac-select-convert-to-string)
 	 (NSTIFFPboardType . nil)
 	 (NSFilenamesPboardType . mac-select-convert-to-pasteboard-filenames)
-	 )
+         (NSPasteboardTypePDF . nil))
        selection-converter-alist))
 
 ;;;; Apple events, Action events, and Services menu
@@ -1569,7 +1592,7 @@ the echo area or in a buffer where the cursor is not displayed."
   :group 'mac)
 
 (defface mac-ts-converted-text
-  '((((background dark)) :underline "gray20")
+  '((((background dark)) :underline "gray60")
     (t :underline "gray80"))
   "Face for converted text in Mac TSM active input area."
   :group 'mac)
@@ -2252,6 +2275,19 @@ reference URLs of the form \"file:///.file/id=...\"."
       (if type-data
           (mac-dnd-drop-data event (selected-frame) window
                              (cdr type-data) (car type-data) action)))))
+
+
+;;;; Key-value observing for application
+
+(defun mac-handle-application-effective-appearance-change (_event)
+  (interactive "e")
+  (clear-face-cache)
+  (dolist (frame (frame-list))
+    (set-frame-parameter frame 'background-color
+			 (frame-parameter frame 'background-color))))
+
+(define-key mac-apple-event-map [application-kvo effectiveAppearance]
+  'mac-handle-application-effective-appearance-change)
 
 
 (defvar mac-popup-menu-add-contextual-menu)

@@ -289,6 +289,10 @@ struct mac_output
 
   /* Quartz 2D graphics context.  */
   CGContextRef cg_context;
+
+  /* Data representing the array of NativeRectangle's that will be
+     inverted on drawRect: invocation.  */
+  CFDataRef flash_rectangles_data;
 };
 
 /* Return the X output data for frame F.  */
@@ -316,6 +320,8 @@ struct mac_output
   ((f)->output_data.mac->backing_scale_factor)
 #define FRAME_SCALE_MISMATCH_STATE(f) \
   ((f)->output_data.mac->scale_mismatch_state)
+#define FRAME_FLASH_RECTANGLES_DATA(f) \
+  ((f)->output_data.mac->flash_rectangles_data)
 
 /* This gives the mac_display_info structure for the display F is on.  */
 #define FRAME_DISPLAY_INFO(f) (&one_mac_display_info)
@@ -443,6 +449,7 @@ extern Pixmap mac_create_pixmap_from_bitmap_data (char *,
 						  unsigned long, unsigned long,
 						  unsigned int);
 extern void mac_free_pixmap (Pixmap);
+extern void mac_invert_flash_rectangles (struct frame *);
 extern GC mac_create_gc (unsigned long, XGCValues *);
 #if DRAWING_USE_GCD
 extern GC mac_duplicate_gc (GC);
@@ -509,6 +516,10 @@ extern struct mac_operating_system_version
 } mac_operating_system_version;
 extern Lisp_Object mac_four_char_code_to_string (FourCharCode);
 extern bool mac_string_to_four_char_code (Lisp_Object, FourCharCode *);
+extern void mac_foreach_window (struct frame *,
+				bool (CF_NOESCAPE ^) (struct window *));
+extern void mac_map_keymap (Lisp_Object, bool,
+			    void (CF_NOESCAPE ^) (Lisp_Object, Lisp_Object));
 extern Lisp_Object mac_aedesc_to_lisp (const AEDesc *);
 extern OSErr mac_ae_put_lisp (AEDescList *, UInt32, Lisp_Object);
 extern OSErr create_apple_event_from_lisp (Lisp_Object, AppleEvent *);
@@ -625,6 +636,8 @@ extern CGContextRef mac_begin_cg_clip (struct frame *, GC);
 extern void mac_end_cg_clip (struct frame *);
 #endif
 extern void mac_scroll_area (struct frame *, GC, int, int, int, int, int, int);
+extern Lisp_Object mac_color_lookup (const char *);
+extern Lisp_Object mac_color_list_alist (void);
 extern Lisp_Object mac_display_monitor_attributes_list (struct mac_display_info *);
 extern void mac_create_scroll_bar (struct scroll_bar *);
 extern void mac_dispose_scroll_bar (struct scroll_bar *);

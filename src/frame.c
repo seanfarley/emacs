@@ -3168,7 +3168,12 @@ x_set_frame_parameters (struct frame *f, Lisp_Object alist)
 	  register Lisp_Object param_index, old_value;
 
 	  old_value = get_frame_param (f, prop);
-	  if (NILP (Fequal (val, old_value)))
+	  if (NILP (Fequal (val, old_value))
+#ifdef HAVE_MACGUI
+	      || (!EQ (prop, Qfont)
+		  && STRINGP (val) && strncasecmp (SDATA (val), "mac:", 4) == 0)
+#endif
+	      )
 	    {
 	      store_frame_param (f, prop, val);
 

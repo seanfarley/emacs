@@ -459,24 +459,29 @@ mac_cgevent_set_unicode_string_from_event_ref (CGEventRef cgevent,
 
 - (CGColorRef)copyCGColor
 {
+#if MAC_OS_X_VERSION_MIN_REQUIRED < 1080
   if ([self respondsToSelector:@selector(CGColor)])
-    return CGColorRetain ([self CGColor]);
+#endif
+    return CGColorRetain (self.CGColor);
+#if MAC_OS_X_VERSION_MIN_REQUIRED < 1080
   else
     {
-      NSColorSpace *colorSpace = [self colorSpace];
       CGColorSpaceRef cgColorSpace;
       CGFloat *components;
 
-      cgColorSpace = [colorSpace CGColorSpace];
+      if ([self.colorSpaceName isEqualToString:NSNamedColorSpace])
+	cgColorSpace = NULL;
+      else
+	cgColorSpace = self.colorSpace.CGColorSpace;
       if (cgColorSpace)
 	{
-	  components = alloca (sizeof (CGFloat) * [self numberOfComponents]);
+	  components = alloca (sizeof (CGFloat) * self.numberOfComponents);
 	  [self getComponents:components];
 	}
       else
 	{
 	  NSColor *colorInSRGB =
-	    [self colorUsingColorSpace:[NSColorSpace sRGBColorSpace]];
+	    [self colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
 
 	  if (colorInSRGB)
 	    {
@@ -490,6 +495,7 @@ mac_cgevent_set_unicode_string_from_event_ref (CGEventRef cgevent,
     }
 
   return NULL;
+#endif
 }
 
 @end				// NSColor (Emacs)
@@ -861,6 +867,16 @@ has_visual_effect_view_p (void)
 #endif
 }
 
+static bool
+has_system_appearance_p (void)
+{
+#if MAC_OS_X_VERSION_MIN_REQUIRED >= 101400
+  return true;
+#else
+  return !(floor (NSAppKitVersionNumber) <= NSAppKitVersionNumber10_13);
+#endif
+}
+
 #if MAC_OS_X_VERSION_MIN_REQUIRED < 101000
 /* Whether window's bottom corners need masking so they look rounded.
    If we use NSVisualEffectView (available on OS X 10.10 and later)
@@ -1055,36 +1071,6 @@ mac_trash_file (const char *filename, CFErrorRef *cferror)
   return result;
 }
 
-static int
-mac_foreach_window_1 (struct window *w,
-		      int (CF_NOESCAPE ^block) (struct window *))
-{
-  int cont;
-
-  for (cont = 1; w && cont;)
-    {
-      if (WINDOWP (w->contents))
-	cont = mac_foreach_window_1 (XWINDOW (w->contents), block);
-      else
-	cont = block (w);
-
-      w = NILP (w->next) ? 0 : XWINDOW (w->next);
-    }
-
-  return cont;
-}
-
-/* Like foreach_window in window.c, but takes BLOCK rather than FN and
-   USER_DATA.  Stops when BLOCK returns 0.  */
-
-static void
-mac_foreach_window (struct frame *f, int (CF_NOESCAPE ^block) (struct window *))
-{
-  /* delete_frame may set FRAME_ROOT_WINDOW (f) to Qnil.  */
-  if (WINDOWP (FRAME_ROOT_WINDOW (f)))
-    mac_foreach_window_1 (XWINDOW (FRAME_ROOT_WINDOW (f)), block);
-}
-
 
 /************************************************************************
 			     Application
@@ -1173,10 +1159,15 @@ static bool mac_run_loop_running_once_p;
 - (void)dealloc
 {
   [[NSNotificationCenter defaultCenter] removeObserver:self];
+  for (NSString *keyPath in observedKeyPaths)
+    [NSApp removeObserver:self forKeyPath:keyPath];
 #if !USE_ARC
+  [observedKeyPaths release];
+#if MAC_OS_X_VERSION_MIN_REQUIRED < 101000
   [lastFlushDate release];
   [flushTimer release];
   [deferredFlushWindows release];
+#endif
   [super dealloc];
 #endif
 }
@@ -1191,6 +1182,7 @@ static bool mac_run_loop_running_once_p;
   init_menu_bar ();
   init_apple_event_handler ();
   init_accessibility ();
+  observedKeyPaths = [[NSSet alloc] init];
 }
 
 - (void)applicationDidFinishLaunching:(NSNotification *)notification
@@ -1226,6 +1218,17 @@ static bool mac_run_loop_running_once_p;
   [NSApp registerUserInterfaceItemSearchHandler:self];
   Vmac_help_topics = Qnil;
 
+  if (!(floor (NSAppKitVersionNumber) <= NSAppKitVersionNumber10_13)
+      && [[NSUserDefaults standardUserDefaults]
+	   objectForKey:@"NSViewAllowsRootLayerBacking"] == nil)
+    {
+      NSDictionaryOf (NSString *, NSString *) *appDefaults =
+	[NSDictionary dictionaryWithObject:@"NO"
+				    forKey:@"NSViewAllowsRootLayerBacking"];
+
+      [[NSUserDefaults standardUserDefaults] registerDefaults:appDefaults];
+    }
+
   /* Exit from the main event loop.  */
   [NSApp stop:nil];
   [NSApp postDummyEvent];
@@ -1243,6 +1246,67 @@ static bool mac_run_loop_running_once_p;
 - (void)antialiasThresholdDidChange:(NSNotification *)notification
 {
   macfont_update_antialias_threshold ();
+}
+
+- (void)updateObservedKeyPaths
+{
+  Lisp_Object keymap = get_keymap (Vmac_apple_event_map, 0, 0);
+
+  if (!NILP (keymap))
+    keymap = get_keymap (access_keymap (keymap, Qapplication_kvo, 0, 1, 0),
+			 0, 0);
+  if (!NILP (keymap))
+    {
+      NSMutableSetOf (NSString *) *work =
+	[[NSMutableSet alloc] initWithCapacity:0];
+
+      mac_map_keymap (keymap, false, ^(Lisp_Object key, Lisp_Object binding) {
+	  if (!NILP (binding) && !EQ (binding, Qundefined) && SYMBOLP (key))
+	    [work addObject:[NSString
+			      stringWithUTF8LispString:(SYMBOL_NAME (key))]];
+	});
+
+      NSSetOf (NSString *) *oldObservedKeyPaths = observedKeyPaths;
+      observedKeyPaths = [[NSSet alloc] initWithSet:work];
+
+      for (NSString *keyPath in oldObservedKeyPaths)
+	if ([work member:keyPath])
+	  [work removeObject:keyPath];
+	else
+	  [NSApp removeObserver:self forKeyPath:keyPath];
+      MRC_RELEASE (oldObservedKeyPaths);
+
+      for (NSString *keyPath in work)
+	[NSApp addObserver:self forKeyPath:keyPath
+		   options:(NSKeyValueObservingOptionOld
+			    | NSKeyValueObservingOptionNew)
+		   context:nil];
+      MRC_RELEASE (work);
+    }
+}
+
+- (void)observeValueForKeyPath:(NSString *)keyPath ofObject:(id)object
+                        change:(NSDictionaryOf (NSKeyValueChangeKey, id) *)change
+                       context:(void *)context
+{
+  if ([observedKeyPaths containsObject:keyPath])
+    {
+      struct input_event inev;
+      Lisp_Object tag_Lisp = build_string ("Lisp");
+      Lisp_Object change_value =
+	cfobject_to_lisp ((__bridge CFTypeRef) change,
+			  CFOBJECT_TO_LISP_FLAGS_FOR_EVENT, -1);
+      Lisp_Object arg = Qnil;
+
+      arg = Fcons (Fcons (Qchange, Fcons (tag_Lisp, change_value)), arg);
+      EVENT_INIT (inev);
+      inev.kind = MAC_APPLE_EVENT;
+      inev.x = Qapplication_kvo;
+      inev.y = Fintern (keyPath.UTF8LispString, Qnil);
+      XSETFRAME (inev.frame_or_window, mac_focus_frame (&one_mac_display_info));
+      inev.arg = Fcons (build_string ("aevt"), arg);
+      [self storeEvent:&inev];
+    }
 }
 
 - (int)getAndClearMenuItemSelection
@@ -1617,10 +1681,13 @@ emacs_windows_need_display_p (void)
 
 - (void)flushWindow:(NSWindow *)window force:(BOOL)flag
 {
+#if MAC_OS_X_VERSION_MIN_REQUIRED < 101000
   /* Deferring flush seems to be unnecessary and give a reverse effect
      on OS X 10.11.  */
   if (!(floor (NSAppKitVersionNumber) <= NSAppKitVersionNumber10_10_Max))
+#endif
     [window flushWindow];
+#if MAC_OS_X_VERSION_MIN_REQUIRED < 101000
   else
     {
       NSTimeInterval timeInterval;
@@ -1659,13 +1726,16 @@ emacs_windows_need_display_p (void)
 	  [deferredFlushWindows removeAllObjects];
 	}
     }
+#endif
 }
 
+#if MAC_OS_X_VERSION_MIN_REQUIRED < 101000
 - (void)processDeferredFlushWindow:(NSTimer *)theTimer
 {
   if (mac_run_loop_running_once_p)
     [self flushWindow:nil force:YES];
 }
+#endif
 
 /* Some key bindings in mac_apple_event_map are regarded as methods in
    the application delegate.  */
@@ -1880,6 +1950,10 @@ mac_application_state (void)
 
   result = Fcons (QChidden_p, Fcons ([NSApp isHidden] ? Qt : Qnil, result));
   result = Fcons (QCactive_p, Fcons ([NSApp isActive] ? Qt : Qnil, result));
+  if ([NSApp respondsToSelector:@selector(effectiveAppearance)])
+    result = Fcons (QCappearance,
+		    Fcons ([NSApp effectiveAppearance].name.lispString,
+			   result));
 
   return result;
 }
@@ -2127,7 +2201,8 @@ static CGRect unset_global_focus_view_frame (void);
 {
   Lisp_Object alist =
     list1 (Fcons (Qtool_bar_lines,
-		  make_number ([(NSMenuItem *)sender state] != NSOffState)));
+		  make_number ([(NSMenuItem *)sender state]
+			       != NSControlStateValueOff)));
   EmacsFrameController *frameController = ((EmacsFrameController *)
 					   [self delegate]);
 
@@ -2153,6 +2228,16 @@ static CGRect unset_global_focus_view_frame (void);
 	    mac_run_loop_run_once (kEventDurationForever);
 	}
     }
+}
+
+- (id <NSAppearanceCustomization>)appearanceCustomization
+{
+  if (!has_visual_effect_view_p ())
+    return nil;
+  else if (has_system_appearance_p ())
+    return self.contentView;
+  else
+    return self;
 }
 
 @end				// EmacsWindow
@@ -2240,10 +2325,83 @@ static CGRect unset_global_focus_view_frame (void);
   /* OS X 10.9 needs this.  */
   if ([overlayView respondsToSelector:@selector(setLayerUsesCoreImageFilters:)])
     [overlayView setLayerUsesCoreImageFilters:YES];
-  if (has_resize_indicator_at_bottom_right_p ())
-    [overlayView setShowsResizeIndicator:YES];
 
   [self setupAnimationLayer];
+
+  /* We add overlayView to the view hierarchy only when it is
+     necessary.  Otherwise the CVDisplayLink thread would take much
+     CPU time especially with application-side double buffering.  */
+  [overlayView.layer addObserver:self forKeyPath:@"sublayers"
+			 options:NSKeyValueObservingOptionPrior context:nil];
+  [animationLayer addObserver:self forKeyPath:@"sublayers"
+		      options:NSKeyValueObservingOptionPrior context:nil];
+  [overlayView.layer setValue:((id) kCFBooleanFalse) forKey:@"showingBorder"];
+  [overlayView.layer addObserver:self forKeyPath:@"showingBorder"
+			 options:0 context:nil];
+}
+
+- (void)synchronizeOverlayViewFrame
+{
+  overlayView.frame = [emacsWindow.contentView bounds];
+}
+
+- (void)updateOverlayViewParticipation
+{
+  BOOL shouldShowOverlayView =
+    (has_resize_indicator_at_bottom_right_p ()
+     || overlayView.layer.sublayers.count > 1
+     || animationLayer.sublayers.count != 0
+     || ([overlayView.layer valueForKey:@"showingBorder"]
+	 == (id) kCFBooleanTrue));
+
+  if (overlayView.superview && !shouldShowOverlayView)
+    [overlayView removeFromSuperview];
+  else if (!overlayView.superview && shouldShowOverlayView)
+    {
+      /* We place overlayView below emacsView so events are not
+	 intercepted by the former.  Still the former (layer-hosting)
+	 is displayed in front of the latter (neither layer-backed nor
+	 layer-hosting).  */
+      /* Unfortunately, this trick does not work on macOS 10.14.
+	 Placing overlayView above emacsView (with returning nil in
+	 hitTest:) works if the executable is linked against the macOS
+	 10.14 SDK, but not for the one linked on the older versions
+	 then run on macOS 10.14.  Making overlayView a subview of
+	 emacsView works for both cases.  Note that we need to
+	 temporarily hide overlayView when taking screenshot in
+	 -[EmacsFrameController bitmapImageRepInEmacsViewRect:].  */
+      /* If emacsView is layer-backed, which is the case when the
+	 executable is linked against the macOS 10.14 SDK, then the
+	 live resize transition layer used in full screen transition
+	 looks translucent if we make overlayView a subview of
+	 emacsView.  */
+      if (emacsView.layer)
+	[emacsWindow.contentView addSubview:overlayView];
+      else if (!(floor (NSAppKitVersionNumber) <= NSAppKitVersionNumber10_13))
+	{
+	  if (![overlayView.superview isEqual:emacsView])
+	    [emacsView addSubview:overlayView];
+	}
+      else
+	[emacsWindow.contentView addSubview:overlayView positioned:NSWindowBelow
+				 relativeTo:emacsView];
+      [self synchronizeOverlayViewFrame];
+    }
+}
+
+- (void)observeValueForKeyPath:(NSString *)keyPath ofObject:(id)object
+			change:(NSDictionaryOf (NSKeyValueChangeKey, id) *)change
+		       context:(void *)context
+{
+  if ([keyPath isEqualToString:@"sublayers"])
+    {
+      if ([change objectForKey:NSKeyValueChangeNotificationIsPriorKey])
+	[self synchronizeOverlayViewFrame];
+      else
+	[self updateOverlayViewParticipation];
+    }
+  else if ([keyPath isEqualToString:@"showingBorder"])
+    [self updateOverlayViewParticipation];
 }
 
 - (void)setupWindow
@@ -2312,6 +2470,15 @@ static CGRect unset_global_focus_view_frame (void);
      to NO leads to crash in some situations.  */
   CF_BRIDGING_RETAIN (window);
 #endif
+  if (has_visual_effect_view_p ())
+    {
+      id visualEffectView = [[(NSClassFromString (@"NSVisualEffectView")) alloc]
+			      initWithFrame:[window.contentView frame]];
+
+      window.contentView = visualEffectView;
+      MRC_RELEASE (visualEffectView);
+      FRAME_BACKGROUND_ALPHA_ENABLED_P (f) = true;
+    }
   if (oldWindow)
     {
       [window setTitle:[oldWindow title]];
@@ -2320,10 +2487,8 @@ static CGRect unset_global_focus_view_frame (void);
       [window setBackgroundColor:[oldWindow backgroundColor]];
       [window setRepresentedFilename:[oldWindow representedFilename]];
       [window setCollectionBehavior:[oldWindow collectionBehavior]];
-      if (has_visual_effect_view_p ())
-	[(id <NSAppearanceCustomization>)window
-	    setAppearance:[(id <NSAppearanceCustomization>)oldWindow
-							   appearance]];
+      window.appearanceCustomization.appearance =
+	oldWindow.appearanceCustomization.appearance;
 
       [oldWindow setDelegate:nil];
       [self hideHourglass:nil];
@@ -2336,15 +2501,6 @@ static CGRect unset_global_focus_view_frame (void);
   if (floor (NSAppKitVersionNumber) <= NSAppKitVersionNumber10_9)
     [window useOptimizedDrawing:YES];
 #endif
-  if (has_visual_effect_view_p ())
-    {
-      id visualEffectView = [[(NSClassFromString (@"NSVisualEffectView")) alloc]
-			      initWithFrame:[[window contentView] frame]];
-
-      [window setContentView:visualEffectView];
-      MRC_RELEASE (visualEffectView);
-      FRAME_BACKGROUND_ALPHA_ENABLED_P (f) = true;
-    }
   [[window contentView] addSubview:emacsView];
   [self updateBackingScaleFactor];
   [self updateEmacsViewIsHiddenOrHasHiddenAncestor];
@@ -2370,13 +2526,11 @@ static CGRect unset_global_focus_view_frame (void);
       if (has_resize_indicator_at_bottom_right_p ())
 	[window setShowsResizeIndicator:NO];
       [self setupOverlayView];
-      /* We place overlayView below emacsView so events are not
-	 intercepted by the former.  Still the former (layer-hosting)
-	 is displayed in front of the latter (neither layer-backed nor
-	 layer-hosting).  */
-      [[window contentView] addSubview:overlayView positioned:NSWindowBelow
-			    relativeTo:emacsView];
-      [overlayView setFrame:[[window contentView] bounds]];
+#if MAC_OS_X_VERSION_MIN_REQUIRED < 1070
+      if (has_resize_indicator_at_bottom_right_p ())
+	[overlayView setShowsResizeIndicator:YES];
+#endif
+      [self updateOverlayViewParticipation];
       if (has_full_screen_with_dedicated_desktop_p ()
 	  && !(windowManagerState & WM_STATE_FULLSCREEN))
 	[window setCollectionBehavior:NSWindowCollectionBehaviorFullScreenPrimary];
@@ -2385,7 +2539,6 @@ static CGRect unset_global_focus_view_frame (void);
     }
   else
     {
-      [window setAutodisplay:NO];
       [window setHasShadow:YES];
       [window setLevel:NSScreenSaverWindowLevel];
       [window setIgnoresMouseEvents:YES];
@@ -2414,16 +2567,19 @@ static CGRect unset_global_focus_view_frame (void);
   return emacsWindow;
 }
 
-#if !USE_ARC
 - (void)dealloc
 {
+  [overlayView.layer removeObserver:self forKeyPath:@"sublayers"];
+  [animationLayer removeObserver:self forKeyPath:@"sublayers"];
+  [overlayView.layer removeObserver:self forKeyPath:@"showingBorder"];
+#if !USE_ARC
   [emacsView release];
   /* emacsWindow and hourglassWindow are released via
      released-when-closed.  */
   [overlayView release];
   [super dealloc];
-}
 #endif
+}
 
 - (NSSize)hintedWindowFrameSize:(NSSize)frameSize allowsLarger:(BOOL)flag
 {
@@ -2693,7 +2849,6 @@ static CGRect unset_global_focus_view_frame (void);
 
   if (setFrameType != SET_FRAME_UNNECESSARY)
     {
-      BOOL showsResizeIndicator;
       NSRect frameRect = [self preprocessWindowManagerStateChange:newState];
 
       if ((diff & WM_STATE_FULLSCREEN)
@@ -2742,6 +2897,9 @@ static CGRect unset_global_focus_view_frame (void);
 #endif
 	}
 
+#if MAC_OS_X_VERSION_MIN_REQUIRED < 1070
+      BOOL showsResizeIndicator;
+
       if ((newState & WM_STATE_FULLSCREEN)
 	  || ((newState & (WM_STATE_MAXIMIZED_HORZ | WM_STATE_MAXIMIZED_VERT))
 	      == (WM_STATE_MAXIMIZED_HORZ | WM_STATE_MAXIMIZED_VERT)))
@@ -2750,6 +2908,7 @@ static CGRect unset_global_focus_view_frame (void);
 	showsResizeIndicator = YES;
       if (has_resize_indicator_at_bottom_right_p ())
 	[overlayView setShowsResizeIndicator:showsResizeIndicator];
+#endif
       /* This makes it impossible to toggle toolbar visibility for
 	 maximized frames on Mac OS X 10.7.  */
 #if 0
@@ -3157,7 +3316,11 @@ static CGRect unset_global_focus_view_frame (void);
 
   FRAME_SYNTHETIC_BOLD_WORKAROUND_DISABLED_P (f) = true;
   FRAME_BACKGROUND_ALPHA_ENABLED_P (f) = false;
+  if ([overlayView.superview isEqual:emacsView])
+    [overlayView setHidden:YES];
   [emacsView cacheDisplayInRect:rect toBitmapImageRep:bitmap];
+  if (overlayView.isHidden)
+    [overlayView setHidden:NO];
   FRAME_BACKGROUND_ALPHA_ENABLED_P (f) = saved_background_alpha_enabled_p;
   FRAME_SYNTHETIC_BOLD_WORKAROUND_DISABLED_P (f) = false;
 
@@ -3399,7 +3562,7 @@ static CGRect unset_global_focus_view_frame (void);
 	  [contentLayer addSublayer:layer];
 	}
 
-      return 1;
+      return (bool) true;
     });
 
   return rootLayer;
@@ -3663,6 +3826,7 @@ static CGRect unset_global_focus_view_frame (void);
     }
 }
 
+#if MAC_OS_X_VERSION_MIN_REQUIRED < 101100
 - (void)window:(NSWindow *)window
   startCustomAnimationToEnterFullScreenWithDuration:(NSTimeInterval)duration
 {
@@ -3740,12 +3904,14 @@ static CGRect unset_global_focus_view_frame (void);
       [emacsView setFrame:[[emacsView superview] bounds]];
     }];
 }
+#endif
 
 - (NSArrayOf (NSWindow *) *)customWindowsToExitFullScreenForWindow:(NSWindow *)window
 {
   return [self customWindowsToEnterFullScreenForWindow:window];
 }
 
+#if MAC_OS_X_VERSION_MIN_REQUIRED < 101100
 - (void)window:(NSWindow *)window
   startCustomAnimationToExitFullScreenWithDuration:(NSTimeInterval)duration
 {
@@ -3809,6 +3975,7 @@ static CGRect unset_global_focus_view_frame (void);
       [emacsView setFrame:[[emacsView superview] bounds]];
     }];
 }
+#endif
 
 - (BOOL)isWindowFrontmost
 {
@@ -4138,11 +4305,9 @@ mac_set_tab_group_tab_bar_visible_p (struct frame *f, Lisp_Object value)
       [window exitTabGroupOverview];
       [NSApp sendAction:@selector(toggleTabBar:) to:window from:nil];
     });
-#if 0
   [[NSUserDefaults standardUserDefaults]
       removeObjectForKey:[@"NSWindowTabbingShoudShowTabBarKey-"
 			     stringByAppendingString:window.tabbingIdentifier]];
-#endif
 
   return Qt;
 }
@@ -4628,12 +4793,11 @@ mac_rect_make (struct frame *f, CGFloat x, CGFloat y, CGFloat w, CGFloat h)
 void
 mac_set_frame_window_background (struct frame *f, unsigned long color)
 {
-  NSWindow *window = FRAME_MAC_WINDOW_OBJECT (f);
+  EmacsWindow *window = FRAME_MAC_WINDOW_OBJECT (f);
 
   [window setBackgroundColor:[NSColor colorWithXColorPixel:color]];
   if (has_visual_effect_view_p ())
     {
-      EmacsFrameController *frameController = FRAME_CONTROLLER (f);
       /* This formula comes from frame-set-background-mode in
 	 frame.el.  */
       NSAppearanceName name =
@@ -4641,9 +4805,8 @@ mac_set_frame_window_background (struct frame *f, unsigned long color)
 	  + BLUE_FROM_ULONG (color)) >= (int) (0xff * 3 * .6)
 	 ? NS_APPEARANCE_NAME_VIBRANT_LIGHT : NS_APPEARANCE_NAME_VIBRANT_DARK);
 
-      [(id <NSAppearanceCustomization>)window
-	  setAppearance:[NS_APPEARANCE appearanceNamed:name]];
-      [frameController updateScrollerAppearance];
+      window.appearanceCustomization.appearance =
+	[NS_APPEARANCE appearanceNamed:name];
     }
 }
 
@@ -4657,7 +4820,7 @@ x_flush (struct frame *f)
   eassert (f && FRAME_MAC_P (f));
   block_input ();
   window = FRAME_MAC_WINDOW_OBJECT (f);
-  if ([window isVisible] && ![window isFlushWindowDisabled])
+  if (window.isVisible)
     [emacsController flushWindow:window force:YES];
   unblock_input ();
 }
@@ -4676,7 +4839,7 @@ mac_flush_1 (struct frame *f)
     {
       EmacsWindow *window = FRAME_MAC_WINDOW_OBJECT (f);
 
-      if ([window isVisible] && ![window isFlushWindowDisabled])
+      if (window.isVisible)
 	[emacsController flushWindow:window force:NO];
     }
 }
@@ -4693,9 +4856,7 @@ void
 mac_update_begin (struct frame *f)
 {
   EmacsFrameController *frameController = FRAME_CONTROLLER (f);
-  EmacsWindow *window = [frameController emacsWindow];
 
-  [window disableFlushWindow];
   [frameController lockFocusOnEmacsView];
   set_global_focus_view_frame (f);
 }
@@ -4704,12 +4865,10 @@ void
 mac_update_end (struct frame *f)
 {
   EmacsFrameController *frameController = FRAME_CONTROLLER (f);
-  EmacsWindow *window = [frameController emacsWindow];
   CGRect clip_rect = unset_global_focus_view_frame ();
 
   [frameController unlockFocusOnEmacsView];
   mac_mask_rounded_bottom_corners (f, clip_rect, false);
-  [window enableFlushWindow];
 }
 
 /* Create a new Mac window for the frame F and store its delegate in
@@ -4839,8 +4998,13 @@ mac_cursor_create (ThemeCursor shape, const XColor *fore_color,
 
 	  CGContextClearRect (context, CGRectMake (0, 0, width, height));
 	  [NSGraphicsContext saveGraphicsState];
+#if MAC_OS_X_VERSION_MIN_REQUIRED >= 101000
+	  gcontext = [NSGraphicsContext graphicsContextWithCGContext:context
+							     flipped:NO];
+#else
 	  gcontext = [NSGraphicsContext graphicsContextWithGraphicsPort:context
 								flipped:NO];
+#endif
 	  [NSGraphicsContext setCurrentContext:gcontext];
 	  [rep draw];
 	  [NSGraphicsContext restoreGraphicsState];
@@ -4948,13 +5112,30 @@ static int mac_event_to_emacs_modifiers (NSEvent *);
 
 @implementation EmacsView
 
+- (struct frame *)emacsFrame
+{
+  EmacsFrameController *frameController =
+    (EmacsFrameController *) self.window.delegate;
+
+  return frameController.emacsFrame;
+}
+
 - (void)drawRect:(NSRect)aRect
 {
-  /* This might be called when the window is made key and ordered
-     front on macOS 10.12.  */
-#if 0
-  eassert (false);
-#endif
+  struct frame *f = self.emacsFrame;
+  int x = NSMinX (aRect), y = NSMinY (aRect);
+  int width = NSWidth (aRect), height = NSHeight (aRect);
+
+  set_global_focus_view_frame (f);
+  mac_clear_area (f, x, y, width, height);
+  mac_begin_scale_mismatch_detection (f);
+  expose_frame (f, x, y, width, height);
+  x_clear_under_internal_border (f);
+  if (mac_end_scale_mismatch_detection (f)
+      && [NSWindow instancesRespondToSelector:@selector(backingScaleFactor)])
+    SET_FRAME_GARBAGED (f);
+  mac_invert_flash_rectangles (f);
+  unset_global_focus_view_frame ();
 }
 
 - (BOOL)isFlipped
@@ -4964,7 +5145,7 @@ static int mac_event_to_emacs_modifiers (NSEvent *);
 
 - (BOOL)isOpaque
 {
-  return YES;
+  return !(has_visual_effect_view_p () && self.layer);
 }
 
 @end				// EmacsView
@@ -5025,32 +5206,13 @@ static int mac_event_to_emacs_modifiers (NSEvent *);
 #endif
 }
 
-- (struct frame *)emacsFrame
-{
-  EmacsFrameController *frameController = ((EmacsFrameController *)
-					   [[self window] delegate]);
-
-  return [frameController emacsFrame];
-}
-
+#if MAC_OS_X_VERSION_MIN_REQUIRED < 101000
 - (void)drawRect:(NSRect)aRect
 {
-  struct frame *f = [self emacsFrame];
-  int x = NSMinX (aRect), y = NSMinY (aRect);
-  int width = NSWidth (aRect), height = NSHeight (aRect);
-
-  set_global_focus_view_frame (f);
-  mac_clear_area (f, x, y, width, height);
-  mac_begin_scale_mismatch_detection (f);
-  expose_frame (f, x, y, width, height);
-  if (mac_end_scale_mismatch_detection (f)
-      && [NSWindow instancesRespondToSelector:@selector(backingScaleFactor)])
-    SET_FRAME_GARBAGED (f);
-  unset_global_focus_view_frame ();
-#if MAC_OS_X_VERSION_MIN_REQUIRED < 101000
+  [super drawRect:aRect];
   roundedBottomCornersCopied = NO;
-#endif
 }
+#endif
 
 #if MAC_OS_X_VERSION_MIN_REQUIRED < 101000
 - (void)scrollRect:(NSRect)aRect by:(NSSize)offset
@@ -6150,7 +6312,7 @@ static CGContextRef saved_focus_view_context;
 static CGRect saved_focus_view_accumulated_clip_rect;
 #endif
 #if DRAWING_USE_GCD
-dispatch_queue_t global_focus_drawing_queue;
+static dispatch_queue_t global_focus_drawing_queue;
 #endif
 
 static void
@@ -6168,8 +6330,10 @@ set_global_focus_view_frame (struct frame *f)
 #endif
 	}
       global_focus_view_frame = f;
+#if MAC_OS_X_VERSION_MIN_REQUIRED >= 101000
+      FRAME_CG_CONTEXT (f) = [[NSGraphicsContext currentContext] CGContext];
+#else
       FRAME_CG_CONTEXT (f) = [[NSGraphicsContext currentContext] graphicsPort];
-#if MAC_OS_X_VERSION_MIN_REQUIRED < 101000
       global_focus_view_accumulated_clip_rect = CGRectNull;
 #endif
     }
@@ -6207,6 +6371,8 @@ unset_global_focus_view_frame (void)
 {
   CGRect result = CGRectNull;
 
+  mac_draw_queue_sync ();
+
   if (global_focus_view_frame != saved_focus_view_frame)
     {
 #if MAC_OS_X_VERSION_MIN_REQUIRED < 101000
@@ -6224,8 +6390,6 @@ unset_global_focus_view_frame (void)
 	}
     }
   saved_focus_view_frame = NULL;
-
-  mac_draw_queue_sync ();
 
   return result;
 }
@@ -6275,7 +6439,11 @@ mac_begin_cg_clip (struct frame *f, GC gc)
       EmacsFrameController *frameController = FRAME_CONTROLLER (f);
 
       [frameController lockFocusOnEmacsView];
+#if MAC_OS_X_VERSION_MIN_REQUIRED >= 101000
+      context = [[NSGraphicsContext currentContext] CGContext];
+#else
       context = [[NSGraphicsContext currentContext] graphicsPort];
+#endif
       FRAME_CG_CONTEXT (f) = context;
     }
   else
@@ -6370,6 +6538,7 @@ mac_scroll_area (struct frame *f, GC gc, int src_x, int src_y,
 
 @implementation EmacsOverlayView
 
+#if MAC_OS_X_VERSION_MIN_REQUIRED < 1070
 static CGImageRef
 create_resize_indicator_image (void)
 {
@@ -6403,6 +6572,7 @@ create_resize_indicator_image (void)
 
   return image;
 }
+#endif
 
 - (void)setHighlighted:(BOOL)flag
 {
@@ -6410,22 +6580,50 @@ create_resize_indicator_image (void)
 
   if (flag)
     {
-      static CGColorRef borderColor;
+      NSAppearance *oldAppearance;
+      CGColorRef borderColor;
 
-      if (borderColor == NULL)
-	borderColor = [[[NSColor selectedControlColor]
-			 colorWithAlphaComponent:.75] copyCGColor];
+      if (has_visual_effect_view_p ())
+	{
+	  oldAppearance = [NS_APPEARANCE currentAppearance];
+	  [NS_APPEARANCE setCurrentAppearance:self.effectiveAppearance];
+	}
+      borderColor = NSColor.selectedControlColor.copyCGColor;
+      if (has_visual_effect_view_p ())
+	[NS_APPEARANCE setCurrentAppearance:oldAppearance];
+
+      [layer setValue:((id) kCFBooleanTrue) forKey:@"showingBorder"];
 
       [CATransaction setDisableActions:YES];
       layer.borderColor = borderColor;
+      CFRelease (borderColor);
       [CATransaction commit];
 
       layer.borderWidth = 3.0;
     }
   else
-    layer.borderWidth = 0;
+    {
+#if MAC_OS_X_VERSION_MIN_REQUIRED < 1070
+      if ([NSAnimationContext
+	    respondsToSelector:@selector(runAnimationGroup:completionHandler:)])
+#endif
+	[NSAnimationContext runAnimationGroup:^(NSAnimationContext *context) {
+	    layer.borderWidth = 0;
+	  } completionHandler:^{
+	    [layer setValue:((id) kCFBooleanFalse) forKey:@"showingBorder"];
+	  }];
+#if MAC_OS_X_VERSION_MIN_REQUIRED < 1070
+      else
+	/* We could use -[CATransaction setCompletionBlock:], but
+	   overlayview is always shown on Mac OS X 10.6 for the resize
+	   indicator, so we don't have to care about resetting the
+	   value for "showingBorder".  */
+	layer.borderWidth = 0;
+#endif
+    }
 }
 
+#if MAC_OS_X_VERSION_MIN_REQUIRED < 1070
 - (void)setShowsResizeIndicator:(BOOL)flag
 {
   CALayer *layer = [self layer];
@@ -6443,8 +6641,113 @@ create_resize_indicator_image (void)
   else
     layer.contents = nil;
 }
+#endif
+
+- (NSView *)hitTest:(NSPoint)point
+{
+  return nil;
+}
 
 @end				// EmacsOverlayView
+
+
+/************************************************************************
+				Color
+ ************************************************************************/
+
+Lisp_Object
+mac_color_lookup (const char *color_name)
+{
+  Lisp_Object result = Qnil;
+  char *colon;
+  NSColorListName listName = @"System";
+  NSColor *color = nil, *colorInSRGB;
+  NSAppearance *oldAppearance, *appearance;
+
+  /* color_name is of the form either "mac:COLOR_LIST_NAME:COLOR_NAME"
+     or "mac:COLOR_NAME".  The latter form is for system colors.  */
+  if (strncasecmp (color_name, "mac:", 4) != 0)
+    return Qnil;
+
+  color_name += sizeof ("mac:") - 1;
+  colon = strchr (color_name, ':');
+  if (colon)
+    {
+      listName = MRC_AUTORELEASE ([[NSString alloc]
+				    initWithBytes:color_name
+					   length:(colon - color_name)
+					 encoding:NSUTF8StringEncoding]);
+      color_name = colon + 1;
+    }
+  if (listName)
+    {
+      NSColorName colorName = [NSString stringWithUTF8String:color_name];
+      NSColorList *colorList = [NSColorList colorListNamed:listName];
+
+      if (!colorList)
+	for (NSColorList *list in NSColorList.availableColorLists)
+	  if ([list.name localizedCaseInsensitiveCompare:listName]
+	      == NSOrderedSame)
+	    {
+	      colorList = list;
+	      break;
+	    }
+
+      color = [colorList colorWithKey:colorName];
+      if (!color && colorList)
+	for (NSColorName key in colorList.allKeys)
+	  if ([key localizedCaseInsensitiveCompare:colorName] == NSOrderedSame)
+	    {
+	      color = [colorList colorWithKey:key];
+	      break;
+	    }
+    }
+
+  if (!color)
+    return Qnil;
+
+  if (has_visual_effect_view_p ())
+    {
+      oldAppearance = [NS_APPEARANCE currentAppearance];
+      appearance = ([NSApp respondsToSelector:@selector(effectiveAppearance)]
+		    ? [NSApp effectiveAppearance]
+		    : [NS_APPEARANCE appearanceNamed:NS_APPEARANCE_NAME_AQUA]);
+      [NS_APPEARANCE setCurrentAppearance:appearance];
+    }
+  colorInSRGB = [color colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+  if (colorInSRGB)
+    {
+      CGFloat components[4];
+
+      [colorInSRGB getComponents:components];
+      result = make_number (RGB_TO_ULONG ((int) (components[0] * 255 + .5),
+					  (int) (components[1] * 255 + .5),
+					  (int) (components[2] * 255 + .5)));
+    }
+  if (has_visual_effect_view_p ())
+    [NS_APPEARANCE setCurrentAppearance:oldAppearance];
+
+  return result;
+}
+
+Lisp_Object
+mac_color_list_alist (void)
+{
+  Lisp_Object result = Qnil;
+
+  for (NSColorList *colorList in NSColorList.availableColorLists)
+    {
+      Lisp_Object color_list = Qnil;
+
+      for (NSColorName key in colorList.allKeys)
+	color_list = Fcons (key.lispString, color_list);
+
+      result = Fcons (Fcons (colorList.name.lispString, Fnreverse (color_list)),
+		      result);
+    }
+
+  return Fnreverse (result);
+}
 
 
 /************************************************************************
@@ -6677,6 +6980,17 @@ static BOOL NonmodalScrollerPagingBehavior;
   [self updateBehavioralParameters];
 }
 
+- (instancetype)initWithFrame:(NSRect)frameRect
+{
+  self = [super initWithFrame:frameRect];
+  if (self == nil)
+    return nil;
+
+  isHorizontal = !(NSHeight (frameRect) >= NSWidth (frameRect));
+
+  return self;
+}
+
 #if !USE_ARC
 - (void)dealloc
 {
@@ -6722,6 +7036,7 @@ static BOOL NonmodalScrollerPagingBehavior;
   return hitPart;
 }
 
+#if MAC_OS_X_VERSION_MIN_REQUIRED < 1070
 - (void)highlight:(BOOL)flag
 {
   if (hitPart == NSScrollerIncrementLine
@@ -6746,6 +7061,7 @@ static BOOL NonmodalScrollerPagingBehavior;
 
   [super drawArrow:position highlightPart:part];
 }
+#endif
 
 /* Post a dummy mouse dragged event to the main event queue to notify
    timer has expired.  */
@@ -6805,7 +7121,9 @@ static BOOL NonmodalScrollerPagingBehavior;
   if (hitPart != NSScrollerKnob && !jumpsToClickedSpot)
     {
       [self rescheduleTimer:[self buttonDelay]];
+#if MAC_OS_X_VERSION_MIN_REQUIRED < 1070
       [self highlight:YES];
+#endif
       [self sendAction:[self action] to:[self target]];
     }
   else
@@ -6821,7 +7139,7 @@ static BOOL NonmodalScrollerPagingBehavior;
 	{
 	  NSRect knobSlotRect = [self rectForPart:NSScrollerKnobSlot];
 
-	  if (NSHeight (bounds) >= NSWidth (bounds))
+	  if (!isHorizontal)
 	    {
 	      knobRect.origin.y = point.y - round (NSHeight (knobRect) / 2);
 	      if (NSMinY (knobRect) < NSMinY (knobSlotRect))
@@ -6844,7 +7162,7 @@ static BOOL NonmodalScrollerPagingBehavior;
 	  hitPart = NSScrollerKnob;
 	}
 
-      if (NSHeight (bounds) >= NSWidth (bounds))
+      if (!isHorizontal)
 	knobGrabOffset = - (point.y - NSMinY (knobRect)) - 1;
       else
 	knobGrabOffset = - (point.x - NSMinX (knobRect)) - 1;
@@ -6858,7 +7176,9 @@ static BOOL NonmodalScrollerPagingBehavior;
 {
   NSScrollerPart lastPart = hitPart;
 
+#if MAC_OS_X_VERSION_MIN_REQUIRED < 1070
   [self highlight:NO];
+#endif
   [self rescheduleTimer:-1];
 
   hitPart = NSScrollerNoPart;
@@ -6902,7 +7222,7 @@ static BOOL NonmodalScrollerPagingBehavior;
 
       bounds = [self bounds];
       knobSlotRect = [self rectForPart:NSScrollerKnobSlot];
-      if (NSHeight (bounds) >= NSWidth (bounds))
+      if (!isHorizontal)
 	knobMinEdgeInSlot = point.y - knobGrabOffset - NSMinY (knobSlotRect);
       else
 	knobMinEdgeInSlot = point.x - knobGrabOffset - NSMinX (knobSlotRect);
@@ -6912,7 +7232,7 @@ static BOOL NonmodalScrollerPagingBehavior;
 	  CGFloat maximum, minEdge;
 	  NSRect KnobRect = [self rectForPart:NSScrollerKnob];
 
-	  if (NSHeight (bounds) >= NSWidth (bounds))
+	  if (!isHorizontal)
 	    maximum = NSHeight (knobSlotRect) - NSHeight (KnobRect);
 	  else
 	    maximum = NSWidth (knobSlotRect) - NSWidth (KnobRect);
@@ -6946,22 +7266,30 @@ static BOOL NonmodalScrollerPagingBehavior;
 		unhilite = YES;
 	      break;
 
+#if MAC_OS_X_VERSION_MIN_REQUIRED < 1070
 	    case NSScrollerIncrementLine:
 	    case NSScrollerDecrementLine:
 	      if (part != NSScrollerIncrementLine
 		  && part != NSScrollerDecrementLine)
 		unhilite = YES;
 	      break;
+#endif
 	    }
 	}
 
       if (unhilite)
-	[self highlight:NO];
+	{
+#if MAC_OS_X_VERSION_MIN_REQUIRED < 1070
+	  [self highlight:NO];
+#endif
+	}
       else if (part != hitPart || timer == nil)
 	{
 	  hitPart = part;
 	  [self rescheduleTimer:[self buttonPeriod]];
+#if MAC_OS_X_VERSION_MIN_REQUIRED < 1070
 	  [self highlight:YES];
+#endif
 	  [self sendAction:[self action] to:[self target]];
 	}
     }
@@ -6980,7 +7308,8 @@ static BOOL NonmodalScrollerPagingBehavior;
     {NSControlSizeRegular, NSControlSizeSmall}; /* Descending */
   int i, count = ARRAYELTS (controlSizes);
   NSRect knobRect, bounds = [self bounds];
-  CGFloat shorterDimension = min (NSWidth (bounds), NSHeight (bounds));
+  CGFloat shorterDimension =
+    !isHorizontal ? NSWidth (bounds) : NSHeight (bounds);
 
   for (i = 0; i < count; i++)
     {
@@ -7010,7 +7339,7 @@ static BOOL NonmodalScrollerPagingBehavior;
       || (NSWidth (knobRect) == NSWidth (bounds)
 	  && NSHeight (knobRect) == NSHeight (bounds)))
     tooSmall = YES;
-  if (NSHeight (bounds) >= NSWidth (bounds))
+  if (!isHorizontal)
     minKnobSpan = NSHeight (knobRect);
   else
     minKnobSpan = NSWidth (knobRect);
@@ -7059,23 +7388,16 @@ static BOOL NonmodalScrollerPagingBehavior;
 
 - (void)drawRect:(NSRect)aRect
 {
-  if (!has_visual_effect_view_p ())
-    [super drawRect:aRect];
-  else if ([[NS_APPEARANCE currentAppearance] allowsVibrancy])
+  [self.window.backgroundColor set];
+  NSRectFill (aRect);
+  [super drawRect:aRect];
+  if (has_visual_effect_view_p ()
+      && ![NS_APPEARANCE currentAppearance].allowsVibrancy
+      && !mac_accessibility_display_options.reduce_transparency_p)
     {
-      [[[self window] backgroundColor] set];
-      NSRectFill ([self rectForPart:NSScrollerKnobSlot]);
-      [super drawRect:aRect];
-    }
-  else
-    {
-      [super drawRect:aRect];
-      if (!mac_accessibility_display_options.reduce_transparency_p)
-	{
-	  [[[[self window] backgroundColor] colorWithAlphaComponent:0.25] set];
-	  NSRectFillUsingOperation ([self rectForPart:NSScrollerKnobSlot],
-				    NSCompositingOperationSourceOver);
-	}
+      [[self.window.backgroundColor colorWithAlphaComponent:0.25] set];
+      NSRectFillUsingOperation ([self rectForPart:NSScrollerKnobSlot],
+				NSCompositingOperationSourceOver);
     }
 }
 
@@ -7099,25 +7421,21 @@ static BOOL NonmodalScrollerPagingBehavior;
   return YES;
 }
 
-- (void)updateAppearance
+- (NSAppearance *)effectiveAppearance
 {
-  if (has_visual_effect_view_p ())
-    {
-      /* If NSWindow's appearance is NSAppearanceNameVibrantLight and
-	 its views inherit it, then the backgrounds of a scroll bar
-	 and containing Emacs window become the same color.  This
-	 makes it difficult to distinguish horizontally adjacent
-	 fringe-less Emacs windows with scroll bars.  So we explicitly
-	 specify NSAppearanceNameAqua for EmacsScroller's appearance
-	 if NSWindow's appearance is NSAppearanceNameVibrantLight.  */
-      if ([[[(id <NSAppearanceCustomization>)[self window] appearance] name]
-	    isEqualToString:NS_APPEARANCE_NAME_VIBRANT_LIGHT])
-	[(id <NSAppearanceCustomization>)self
-	    setAppearance:[NS_APPEARANCE
-			    appearanceNamed:NS_APPEARANCE_NAME_AQUA]];
-      else
-	[(id <NSAppearanceCustomization>)self setAppearance:nil];
-    }
+  NSAppearance *effectiveAppearance = super.effectiveAppearance;
+
+  /* If a scroll bar is drawn with the vibrant light appearance, then
+     the backgrounds of the scroll bar and containing Emacs window
+     become the same color.  This makes it difficult to distinguish
+     horizontally adjacent fringe-less Emacs windows with scroll bars.
+     So we change EmacsScroller's appearance to NSAppearanceNameAqua
+     if otherwise it becomes NSAppearanceNameVibrantLight.  */
+  if ([effectiveAppearance.name
+	  isEqualToString:NS_APPEARANCE_NAME_VIBRANT_LIGHT])
+    return [NS_APPEARANCE appearanceNamed:NS_APPEARANCE_NAME_AQUA];
+  else
+    return effectiveAppearance;
 }
 
 - (CGFloat)knobSlotSpan
@@ -7134,7 +7452,7 @@ static BOOL NonmodalScrollerPagingBehavior;
       [self setKnobProportion:0];
       [self setEnabled:YES];
       knobSlotRect = [self rectForPart:NSScrollerKnobSlot];
-      if (NSHeight (bounds) >= NSWidth (bounds))
+      if (!isHorizontal)
 	knobSlotSpan = NSHeight (knobSlotRect);
       else
 	knobSlotSpan = NSWidth (knobSlotRect);
@@ -7183,7 +7501,7 @@ static BOOL NonmodalScrollerPagingBehavior;
 
   hitPart = [self testPart:point];
   point = [self convertPoint:point fromView:nil];
-  if (NSHeight (bounds) >= NSWidth (bounds))
+  if (!isHorizontal)
     {
       frameSpan = NSHeight (bounds);
       clickPositionInFrame = point.y;
@@ -7264,6 +7582,7 @@ scroller_part_to_scroll_bar_part (NSScrollerPart part,
 {
   switch (part)
     {
+#if MAC_OS_X_VERSION_MIN_REQUIRED < 1070
     case NSScrollerDecrementLine:	return ((flags
 						 & NSEventModifierFlagOption)
 						? scroll_bar_above_handle
@@ -7272,6 +7591,7 @@ scroller_part_to_scroll_bar_part (NSScrollerPart part,
 						 & NSEventModifierFlagOption)
 						? scroll_bar_below_handle
 						: scroll_bar_down_arrow);
+#endif
     case NSScrollerDecrementPage:	return scroll_bar_above_handle;
     case NSScrollerIncrementPage:	return scroll_bar_below_handle;
     case NSScrollerKnob:		return scroll_bar_handle;
@@ -7287,6 +7607,7 @@ scroller_part_to_horizontal_scroll_bar_part (NSScrollerPart part,
 {
   switch (part)
     {
+#if MAC_OS_X_VERSION_MIN_REQUIRED < 1070
     case NSScrollerDecrementLine:	return ((flags
 						 & NSEventModifierFlagOption)
 						? scroll_bar_before_handle
@@ -7295,6 +7616,7 @@ scroller_part_to_horizontal_scroll_bar_part (NSScrollerPart part,
 						 & NSEventModifierFlagOption)
 						? scroll_bar_after_handle
 						: scroll_bar_right_arrow);
+#endif
     case NSScrollerDecrementPage:	return scroll_bar_before_handle;
     case NSScrollerIncrementPage:	return scroll_bar_after_handle;
     case NSScrollerKnob:		return scroll_bar_horizontal_handle;
@@ -7394,7 +7716,34 @@ scroller_part_to_horizontal_scroll_bar_part (NSScrollerPart part,
 {
   struct window *w = XWINDOW (bar->window);
   NSRect frame = NSMakeRect (bar->left, bar->top, bar->width, bar->height);
-  EmacsScroller *scroller = [[EmacsScroller alloc] initWithFrame:frame];
+  BOOL frameAdjusted = NO;
+  EmacsScroller *scroller;
+
+  /* Avoid confusion between vertical and horizontal types when
+     creating the scroller.  */
+  if (!bar->horizontal)
+    {
+      if (bar->height < bar->width)
+	frame.size.height = NSWidth (frame) + 1;
+      frameAdjusted = YES;
+    }
+  else
+    {
+      if (bar->width < bar->height)
+	frame.size.width = NSHeight (frame) + 1;
+      frameAdjusted = YES;
+    }
+
+  scroller = [[EmacsScroller alloc] initWithFrame:frame];
+
+  if (frameAdjusted)
+    {
+      if (!bar->horizontal)
+	frame.size.height = bar->height;
+      else
+	frame.size.width = bar->width;
+      scroller.frame = frame;
+    }
 
   [scroller setEmacsScrollBar:bar];
   [scroller setAction:@selector(convertScrollerAction:)];
@@ -7403,26 +7752,17 @@ scroller_part_to_horizontal_scroll_bar_part (NSScrollerPart part,
     [scroller setAutoresizingMask:NSViewMinXMargin];
   else if (bar->horizontal && WINDOW_BOTTOMMOST_P (w))
     [scroller setAutoresizingMask:NSViewMinYMargin];
-  [emacsView addSubview:scroller];
-  [scroller updateAppearance];
+  [emacsView addSubview:scroller positioned:NSWindowBelow relativeTo:nil];
   MRC_RELEASE (scroller);
   SET_SCROLL_BAR_SCROLLER (bar, scroller);
-}
-
-- (void)updateScrollerAppearance
-{
-  for (NSView *view in [emacsView subviews])
-    if ([view isKindOfClass:[EmacsScroller class]])
-      [(EmacsScroller *)view updateAppearance];
 }
 
 - (void)setVibrantScrollersHidden:(BOOL)flag
 {
   if (has_visual_effect_view_p ())
-    for (NSView *view in [emacsView subviews])
+    for (NSView *view in emacsView.subviews)
       if ([view isKindOfClass:[EmacsScroller class]]
-	  && [[(id <NSAppearanceCustomization>)view effectiveAppearance]
-	       allowsVibrancy])
+	  && view.effectiveAppearance.allowsVibrancy)
 	[view setHidden:flag];
 }
 
@@ -8141,7 +8481,7 @@ free_frame_tool_bar (struct frame *f)
 
 /* Called when the user has chosen a font from the font panel.  */
 
-- (void)changeFont:(id)sender
+- (void)changeFont:(NSFontManager *)sender
 {
   EmacsFontPanel *fontPanel = (EmacsFontPanel *) [sender fontPanel:NO];
   NSEvent *currentEvent;
@@ -8586,6 +8926,7 @@ mac_read_socket (struct terminal *terminal, struct input_event *hold_quit)
       /* Maybe these should be done at some redisplay timing.  */
       update_apple_event_handler ();
       update_dragged_types ();
+      [emacsController updateObservedKeyPaths];
 
       if (dpyinfo->saved_menu_event
 	  && (GetEventTime (dpyinfo->saved_menu_event) + SAVE_MENU_EVENT_TIMEOUT
@@ -8616,14 +8957,6 @@ mac_read_socket (struct terminal *terminal, struct input_event *hold_quit)
       FOR_EACH_FRAME (tail, frame)
 	{
 	  struct frame *f = XFRAME (frame);
-
-	  /* The tooltip has been drawn already.  Avoid the
-	     SET_FRAME_GARBAGED in mac_handle_visibility_change.  */
-	  if (EQ (frame, tip_frame))
-	    {
-	      x_flush (f);
-	      continue;
-	    }
 
 	  if (FRAME_MAC_P (f))
 	    {
@@ -8685,9 +9018,10 @@ mac_read_socket (struct terminal *terminal, struct input_event *hold_quit)
       MRC_RELEASE (indicator);
       [self updateHourglassWindowOrigin];
       if (has_visual_effect_view_p ())
-	[(id <NSAppearanceCustomization>)hourglassWindow
-	    setAppearance:[(id <NSAppearanceCustomization>)emacsWindow
-							   appearance]];
+	hourglassWindow.appearance =
+	  ((windowManagerState & WM_STATE_FULLSCREEN)
+	   ? emacsWindow.appearanceCustomization.appearance
+	   : emacsWindow.appearance);
       [emacsWindow addChildWindow:hourglassWindow ordered:NSWindowAbove];
       [hourglassWindow orderWindow:NSWindowAbove
 			relativeTo:[emacsWindow windowNumber]];
@@ -8876,7 +9210,7 @@ mac_file_dialog (Lisp_Object prompt, Lisp_Object dir,
   [NSApp stopModal];
 }
 
-- (void)changeFont:(id)sender
+- (void)changeFont:(NSFontManager *)sender
 {
 }
 
@@ -8901,14 +9235,14 @@ create_ok_cancel_buttons_view (void)
   NSArrayOf (NSString *) *formats;
 
   cancelButton = [[NSButton alloc] init];
-  [cancelButton setBezelStyle:NSRoundedBezelStyle];
+  [cancelButton setBezelStyle:NSBezelStyleRounded];
   [cancelButton setTitle:@"Cancel"];
   [cancelButton setAction:@selector(cancel:)];
   [cancelButton setKeyEquivalent:@"\e"];
   [cancelButton setTranslatesAutoresizingMaskIntoConstraints:NO];
 
   okButton = [[NSButton alloc] init];
-  [okButton setBezelStyle:NSRoundedBezelStyle];
+  [okButton setBezelStyle:NSBezelStyleRounded];
   [okButton setTitle:@"OK"];
   [okButton setAction:@selector(ok:)];
   [okButton setKeyEquivalent:@"\r"];
@@ -8951,7 +9285,7 @@ create_ok_cancel_buttons_view (void)
   NSRect frame;
   NSButtonCell *cancelButton, *okButton;
 
-  [prototype setBezelStyle:NSRoundedBezelStyle];
+  [prototype setBezelStyle:NSBezelStyleRounded];
   cellSize = [prototype cellSize];
   frame = NSMakeRect (0, 0, cellSize.width * 2, cellSize.height);
   view = [[NSMatrix alloc] initWithFrame:frame
@@ -9072,9 +9406,9 @@ static NSString *localizedMenuTitleForEdit, *localizedMenuTitleForHelp;
       /* Draw radio buttons and tickboxes. */
       if (wv->selected && (wv->button_type == BUTTON_TYPE_TOGGLE
 			   || wv->button_type == BUTTON_TYPE_RADIO))
-	[item setState:NSOnState];
+	[item setState:NSControlStateValueOn];
       else
-	[item setState:NSOffState];
+	[item setState:NSControlStateValueOff];
 
       [item setTag:((NSInteger) (intptr_t) wv->call_data)];
     }
@@ -9342,7 +9676,7 @@ restore_show_help_function (Lisp_Object old_show_help_function)
 
 	[item setTarget:window];
 	if ([window isKeyWindow])
-	  [item setState:NSOnState];
+	  [item setState:NSControlStateValueOn];
 	else if ([window isMiniaturized])
 	  {
 	    NSImage *image = [NSImage imageNamed:@"NSMenuItemDiamond"];
@@ -9350,7 +9684,7 @@ restore_show_help_function (Lisp_Object old_show_help_function)
 	    if (image)
 	      {
 		[item setOnStateImage:image];
-		[item setState:NSOnState];
+		[item setState:NSControlStateValueOn];
 	      }
 	  }
 	[menu addItem:item];
@@ -9752,7 +10086,7 @@ create_and_show_popup_menu (struct frame *f, widget_value *first_wv, int x, int 
       [self addSubview:button];
       MRC_RELEASE (button);
 
-      [button setBezelStyle:NSRoundedBezelStyle];
+      [button setBezelStyle:NSBezelStyleRounded];
       [button setFont:[NSFont systemFontOfSize:0]];
       [button setTitle:label];
 
@@ -10226,7 +10560,7 @@ mac_export_frames (Lisp_Object frames, Lisp_Object type)
     {
       EmacsFrameController *frameController = FRAME_CONTROLLER (f);
       NSBitmapImageRep *bitmap = [frameController bitmapImageRep];
-      NSData *data = [bitmap representationUsingType:NSPNGFileType
+      NSData *data = [bitmap representationUsingType:NSBitmapImageFileTypePNG
 					  properties:[NSDictionary dictionary]];
 
       if (data)
@@ -10258,8 +10592,13 @@ mac_export_frames (Lisp_Object frames, Lisp_Object type)
 					    forKey:((__bridge NSString *)
 						    kCGPDFContextMediaBox)];
 	      NSGraphicsContext *gcontext =
+#if MAC_OS_X_VERSION_MIN_REQUIRED >= 101000
+		[NSGraphicsContext graphicsContextWithCGContext:context
+							flipped:NO];
+#else
 		[NSGraphicsContext graphicsContextWithGraphicsPort:context
 							   flipped:NO];
+#endif
 
 	      CGPDFContextBeginPage (context,
 				     (__bridge CFDictionaryRef) pageInfo);
@@ -10572,57 +10911,6 @@ static NSMutableSetOf (NSNumber *) *registered_apple_event_specs;
 
 @end				// EmacsController (AppleEvent)
 
-/* Function used as an argument to map_keymap for registering all
-   pairs of Apple event class and ID in mac_apple_event_map.  */
-
-static void
-register_apple_event_specs (Lisp_Object key, Lisp_Object binding,
-			    Lisp_Object args, void *data)
-{
-  Lisp_Object code_string;
-
-  if (!SYMBOLP (key))
-    return;
-  code_string = Fget (key, (NILP (args)
-			    ? Qmac_apple_event_class : Qmac_apple_event_id));
-  if (STRINGP (code_string) && SBYTES (code_string) == 4)
-    {
-      if (NILP (args))
-	{
-	  Lisp_Object keymap = get_keymap (binding, 0, 0);
-
-	  if (!NILP (keymap))
-	    map_keymap (keymap, register_apple_event_specs,
-			code_string, data, 0);
-	}
-      else if (!NILP (binding) && !EQ (binding, Qundefined))
-	{
-	  NSMutableSetOf (NSNumber *) *set =
-	    (__bridge NSMutableSetOf (NSNumber *) *) data;
-	  AEEventClass eventClass;
-	  AEEventID eventID;
-	  unsigned long long code;
-	  NSNumber *value;
-
-	  mac_string_to_four_char_code (code_string, &eventID);
-	  mac_string_to_four_char_code (args, &eventClass);
-	  code = ((unsigned long long) eventClass << 32) + eventID;
-	  value = [NSNumber numberWithUnsignedLongLong:code];
-
-	  if (![set containsObject:value])
-	    {
-	      NSAppleEventManager *manager =
-		[NSAppleEventManager sharedAppleEventManager];
-
-	      [manager setEventHandler:emacsController
-		       andSelector:@selector(handleAppleEvent:withReplyEvent:)
-		       forEventClass:eventClass andEventID:eventID];
-	      [set addObject:value];
-	    }
-	}
-    }
-}
-
 /* Register pairs of Apple event class and ID in mac_apple_event_map
    if they have not registered yet.  Each registered pair is stored in
    registered_apple_event_specs as a unsigned long long value whose
@@ -10633,9 +10921,42 @@ update_apple_event_handler (void)
 {
   Lisp_Object keymap = get_keymap (Vmac_apple_event_map, 0, 0);
 
-  if (!NILP (keymap))
-    map_keymap (keymap, register_apple_event_specs, Qnil,
-		(__bridge void *) registered_apple_event_specs, 0);
+  if (NILP (keymap))
+    return;
+
+  mac_map_keymap (keymap, false, ^(Lisp_Object key, Lisp_Object binding) {
+      if (!SYMBOLP (key))
+	return;
+      AEEventClass eventClass;
+      if (!mac_string_to_four_char_code (Fget (key, Qmac_apple_event_class),
+					 &eventClass))
+	return;
+      Lisp_Object keymap = get_keymap (binding, 0, 0);
+      if (NILP (keymap))
+	return;
+
+      mac_map_keymap (keymap, false, ^(Lisp_Object key, Lisp_Object binding) {
+	  if (NILP (binding) || EQ (binding, Qundefined) || !SYMBOLP (key))
+	    return;
+	  AEEventID eventID;
+	  if (!mac_string_to_four_char_code (Fget (key, Qmac_apple_event_id),
+					     &eventID))
+	    return;
+
+	  unsigned long long code =
+	    ((unsigned long long) eventClass << 32) + eventID;
+	  NSNumber *value = [NSNumber numberWithUnsignedLongLong:code];
+
+	  if (![registered_apple_event_specs containsObject:value])
+	    {
+	      [[NSAppleEventManager sharedAppleEventManager]
+		setEventHandler:emacsController
+		    andSelector:@selector(handleAppleEvent:withReplyEvent:)
+		  forEventClass:eventClass andEventID:eventID];
+	      [registered_apple_event_specs addObject:value];
+	    }
+	});
+    });
 }
 
 static void
@@ -11741,22 +12062,64 @@ mac_osa_script (Lisp_Object code_or_file, Lisp_Object compiled_p_or_language,
 
       return NULL;
     }
+#if MAC_OS_X_VERSION_MIN_REQUIRED >= 101000
+  gcontext = [NSGraphicsContext graphicsContextWithCGContext:context
+						     flipped:NO];
+#else
   gcontext = [NSGraphicsContext graphicsContextWithGraphicsPort:context
 							flipped:NO];
+#endif
   transform = [NSAffineTransform transform];
   [transform scaleBy:scaleFactor];
   [transform translateXBy:(- NSMinX (rect)) yBy:(- NSMinY (rect))];
   [NSGraphicsContext saveGraphicsState];
   [NSGraphicsContext setCurrentContext:gcontext];
   [transform concat];
-  if (!([self isOpaque] && NSContainsRect (rect, [self bounds])))
+  if (!(self.isOpaque && NSContainsRect (self.bounds, rect)))
     {
       [NSGraphicsContext saveGraphicsState];
       [(color ? color : [NSColor clearColor]) set];
       NSRectFill (rect);
       [NSGraphicsContext restoreGraphicsState];
     }
-  [self displayRectIgnoringOpacity:rect inContext:gcontext];
+#if WK_API_ENABLED && MAC_OS_X_VERSION_MIN_REQUIRED >= 101300
+  if ([self isKindOfClass:[WKWebView class]])
+    {
+      WKWebView *webView = (WKWebView *) self;
+      WKSnapshotConfiguration *snapshotConfiguration =
+	[[WKSnapshotConfiguration alloc] init];
+      NSImage * __block image;
+      BOOL __block finished = NO;
+
+      [webView _setOverrideDeviceScaleFactor:scaleFactor];
+      [webView takeSnapshotWithConfiguration:snapshotConfiguration
+			   completionHandler:^(NSImage *snapshotImage,
+					       NSError *error) {
+	  image = MRC_RETAIN (snapshotImage);
+	  finished = YES;
+	}];
+      MRC_RELEASE (snapshotConfiguration);
+
+      while (!finished)
+	mac_run_loop_run_once (0);
+
+      if (image == nil)
+	{
+	  [NSGraphicsContext restoreGraphicsState];
+	  CGContextRelease (context);
+	  XFreePixmap (NULL, ximg);
+
+	  return NULL;
+	}
+
+      rect = NSIntersectionRect (rect, self.bounds);
+      [image drawAtPoint:rect.origin fromRect:rect
+	       operation:NSCompositingOperationSourceOver fraction:1];
+      MRC_RELEASE (image);
+    }
+  else
+#endif
+    [self displayRectIgnoringOpacity:rect inContext:gcontext];
   [NSGraphicsContext restoreGraphicsState];
   CGContextRelease (context);
 
@@ -11784,27 +12147,85 @@ mac_osa_script (Lisp_Object code_or_file, Lisp_Object compiled_p_or_language,
   return self;
 }
 
+- (NSSize)frameSizeForBoundingBox:(id)boundingBox widthBaseVal:(id)widthBaseVal
+		    heightBaseVal:(id)heightBaseVal imageWidth:(int *)imageWidth
+		      imageHeight:(int *)imageHeight
+{
+  NSNumber *unitType, *num;
+  NSSize frameSize;
+  int width, height;
+  enum {
+	SVG_LENGTHTYPE_PERCENTAGE = 2
+  };
+
+  unitType = [widthBaseVal valueForKey:@"unitType"];
+  if (unitType.intValue == SVG_LENGTHTYPE_PERCENTAGE)
+    {
+      frameSize.width =
+	round ([[boundingBox valueForKey:@"x"] doubleValue]
+	       + [[boundingBox valueForKey:@"width"] doubleValue]);
+      num = [widthBaseVal valueForKey:@"valueInSpecifiedUnits"];
+      width = lround (frameSize.width * num.doubleValue / 100);
+    }
+  else
+    {
+      num = [widthBaseVal valueForKey:@"value"];
+      width = lround (num.doubleValue);
+      frameSize.width = width;
+    }
+
+  unitType = [heightBaseVal valueForKey:@"unitType"];
+  if (unitType.intValue == SVG_LENGTHTYPE_PERCENTAGE)
+    {
+      frameSize.height =
+	round ([[boundingBox valueForKey:@"y"] doubleValue]
+	       + [[boundingBox valueForKey:@"height"] doubleValue]);
+      num = [heightBaseVal valueForKey:@"valueInSpecifiedUnits"];
+      height = lround (frameSize.height * num.doubleValue / 100);
+    }
+  else
+    {
+      num = [heightBaseVal valueForKey:@"value"];
+      height = lround (num.doubleValue);
+      frameSize.height = height;
+    }
+
+  *imageWidth = width;
+  *imageHeight = height;
+
+  return frameSize;
+}
+
 - (bool)loadData:(NSData *)data backgroundColor:(NSColor *)backgroundColor
 	 baseURL:(NSURL *)url
 {
   bool __block result;
 
   mac_within_app (^{
-      NSRect frameRect;
-      WebView *webView;
-      WebFrame *mainFrame;
-      int width, height;
+      NSRect frameRect = NSMakeRect (0, 0, 100, 100); /* Adjusted later.  */
+      int width = -1, height;
       CGFloat scaleFactor;
+#if WK_API_ENABLED && MAC_OS_X_VERSION_MIN_REQUIRED >= 101300
+      WKWebViewConfiguration *configuration =
+	[[WKWebViewConfiguration alloc] init];
+      WKWebView *webView = [[WKWebView alloc] initWithFrame:frameRect
+					      configuration:configuration];
 
-      frameRect = NSMakeRect (0, 0, 100, 100); /* Adjusted later.  */
-      webView = [[WebView alloc] initWithFrame:frameRect
-				     frameName:nil groupName:nil];
-      mainFrame = [webView mainFrame];
+      MRC_RELEASE (configuration);
+      webView.navigationDelegate = self;
+      [webView loadData:data MIMEType:@"image/svg+xml"
+	       characterEncodingName:@"UTF-8" baseURL:url];
+#else
+      WebView *webView = [[WebView alloc] initWithFrame:frameRect
+					      frameName:nil groupName:nil];
+      WebFrame *mainFrame = [webView mainFrame];
+
       [[mainFrame frameView] setAllowsScrolling:NO];
       [webView setValue:backgroundColor forKey:@"backgroundColor"];
       [webView setFrameLoadDelegate:self];
       [mainFrame loadData:data MIMEType:@"image/svg+xml" textEncodingName:nil
 		  baseURL:url];
+#endif
 
       /* [webView isLoading] is not sufficient if we have <image
 	 xlink:href=... /> */
@@ -11813,57 +12234,87 @@ mac_osa_script (Lisp_Object code_or_file, Lisp_Object compiled_p_or_language,
 
       @try
 	{
-	  WebScriptObject *rootElement, *boundingBox;
-	  id val;
-	  NSNumber *unitType, *num;
-	  enum {
-	    SVG_LENGTHTYPE_PERCENTAGE = 2
-	  };
+	  id boundingBox, widthBaseVal, heightBaseVal;
+#if WK_API_ENABLED && MAC_OS_X_VERSION_MIN_REQUIRED >= 101300
+	  NSString * __block jsonString;
+	  BOOL __block finished = NO;
+	  CGFloat components[4];
+	  NSColor *colorInSRGB =
+	    [backgroundColor colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+	  NSString *script;
 
-	  rootElement = [[webView windowScriptObject]
-			  valueForKeyPath:@"document.rootElement"];
+	  [colorInSRGB getComponents:components];
+	  script = [NSString stringWithFormat:@"\
+const rootElement = document.rootElement;				\
+rootElement.style.backgroundColor = '#%02x%02x%02x';			\
+function filter (obj, names) {						\
+  return names.reduce ((acc, nm) => {acc[nm] = obj[nm]; return acc;}, {}); \
+}									\
+JSON.stringify (['width', 'height'].reduce				\
+  ((obj, dim) => {							\
+     obj[dim + 'BaseVal'] =						\
+       filter (rootElement[dim].baseVal,				\
+	       ['unitType', 'value', 'valueInSpecifiedUnits']);		\
+     return obj;							\
+   }, {boundingBox: filter (rootElement.getBBox (),			\
+			    ['x', 'y', 'width', 'height'])}))",
+				       (int) (components[0] * 255 + 0.5),
+				       (int) (components[1] * 255 + 0.5),
+				       (int) (components[2] * 255 + 0.5)];
+	  [webView evaluateJavaScript:script
+		    completionHandler:^(id scriptResult, NSError *error) {
+	      if ([scriptResult isKindOfClass:NSString.class])
+		jsonString = MRC_RETAIN (scriptResult);
+	      else
+		jsonString = nil;
+	      finished = YES;
+	    }];
+
+	  while (!finished)
+	    mac_run_loop_run_once (0);
+
+	  if (jsonString == nil)
+	    boundingBox = nil;
+	  else
+	    {
+	      NSData *data =
+		[jsonString dataUsingEncoding:NSUTF8StringEncoding];
+	      NSDictionary *jsonObject =
+		[NSJSONSerialization JSONObjectWithData:data options:0
+						  error:NULL];
+
+	      boundingBox = jsonObject[@"boundingBox"];
+	      widthBaseVal = jsonObject[@"widthBaseVal"];
+	      heightBaseVal = jsonObject[@"heightBaseVal"];
+	      MRC_AUTORELEASE (jsonString);
+	    }
+#else
+	  WebScriptObject *rootElement =
+	    [[webView windowScriptObject]
+	      valueForKeyPath:@"document.rootElement"];
+
 	  boundingBox = [rootElement callWebScriptMethod:@"getBBox"
 					   withArguments:[NSArray array]];
-	  val = [rootElement valueForKeyPath:@"width.baseVal"];
-	  unitType = [val valueForKey:@"unitType"];
-	  if ([unitType intValue] == SVG_LENGTHTYPE_PERCENTAGE)
-	    {
-	      frameRect.size.width =
-		round ([[boundingBox valueForKey:@"x"] doubleValue]
-		       + [[boundingBox valueForKey:@"width"] doubleValue]);
-	      num = [val valueForKey:@"valueInSpecifiedUnits"];
-	      width = lround (frameRect.size.width * [num doubleValue] / 100);
-	    }
-	  else
-	    {
-	      num = [val valueForKey:@"value"];
-	      width = lround ([num doubleValue]);
-	      frameRect.size.width = width;
-	    }
-
-	  val = [rootElement valueForKeyPath:@"height.baseVal"];
-	  unitType = [val valueForKey:@"unitType"];
-	  if ([unitType intValue] == SVG_LENGTHTYPE_PERCENTAGE)
-	    {
-	      frameRect.size.height =
-		round ([[boundingBox valueForKey:@"y"] doubleValue]
-		       + [[boundingBox valueForKey:@"height"] doubleValue]);
-	      num = [val valueForKey:@"valueInSpecifiedUnits"];
-	      height = lround (frameRect.size.height * [num doubleValue] / 100);
-	    }
-	  else
-	    {
-	      num = [val valueForKey:@"value"];
-	      height = lround ([num doubleValue]);
-	      frameRect.size.height = height;
-	    }
+	  widthBaseVal = [rootElement valueForKeyPath:@"width.baseVal"];
+	  heightBaseVal = [rootElement valueForKeyPath:@"height.baseVal"];
+#endif
+	  if (boundingBox)
+	    frameRect.size = [self frameSizeForBoundingBox:boundingBox
+					      widthBaseVal:widthBaseVal
+					     heightBaseVal:heightBaseVal
+						imageWidth:&width
+					       imageHeight:&height];
 	}
       @catch (NSException *exception)
 	{
+	}
+
+      if (width < 0)
+	{
 	  MRC_RELEASE (webView);
 	  (*imageErrorFunc) ("Error reading SVG image `%s'", emacsImage->spec);
-
 	  result = 0;
+
 	  return;
 	}
 
@@ -11907,16 +12358,26 @@ mac_osa_script (Lisp_Object code_or_file, Lisp_Object compiled_p_or_language,
   return result;
 }
 
+#if WK_API_ENABLED && MAC_OS_X_VERSION_MIN_REQUIRED >= 101300
+- (void)webView:(WKWebView *)webView didFinishNavigation:(WKNavigation *)navigation;
+{
+  isLoaded = YES;
+}
+#else
 - (void)webView:(WebView *)sender didFinishLoadForFrame:(WebFrame *)frame
 {
   isLoaded = YES;
 }
+#endif
 
 @end				// EmacsSVGLoader
 
 bool
 mac_webkit_supports_svg_p (void)
 {
+#if WK_API_ENABLED && MAC_OS_X_VERSION_MIN_REQUIRED >= 101300
+  return true;
+#else
   bool result;
 
   block_input ();
@@ -11924,6 +12385,7 @@ mac_webkit_supports_svg_p (void)
   unblock_input ();
 
   return result;
+#endif
 }
 
 bool
@@ -12321,7 +12783,11 @@ static NSDate *documentRasterizerCacheOldestTimestamp;
   NSRange glyphRange = [layoutManager glyphRangeForTextContainer:textContainer];
   NSAffineTransform *transform = [NSAffineTransform transform];
   NSGraphicsContext *gcontext =
+#if MAC_OS_X_VERSION_MIN_REQUIRED >= 101000
+    [NSGraphicsContext graphicsContextWithCGContext:ctx flipped:YES];
+#else
     [NSGraphicsContext graphicsContextWithGraphicsPort:ctx flipped:YES];
+#endif
 
   [NSGraphicsContext saveGraphicsState];
   [NSGraphicsContext setCurrentContext:gcontext];

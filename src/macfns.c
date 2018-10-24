@@ -872,19 +872,15 @@ static const colormap_t mac_color_map[] =
 static Lisp_Object
 mac_color_map_lookup (const char *colorname)
 {
-  Lisp_Object ret = Qnil;
-  int i;
+  Lisp_Object ret = mac_color_lookup (colorname);
 
-  block_input ();
-
-  for (i = 0; i < ARRAYELTS (mac_color_map); i++)
-    if (xstrcasecmp (colorname, mac_color_map[i].name) == 0)
-      {
-        ret = make_number (mac_color_map[i].color);
-        break;
-      }
-
-  unblock_input ();
+  if (NILP (ret))
+    for (int i = 0; i < ARRAYELTS (mac_color_map); i++)
+      if (xstrcasecmp (colorname, mac_color_map[i].name) == 0)
+	{
+	  ret = make_number (mac_color_map[i].color);
+	  break;
+	}
 
   return ret;
 }
@@ -2238,11 +2234,14 @@ This function is an internal primitive--use `make-frame' instead.  */)
 		       "horizontalScrollBars", "ScrollBars",
 		       RES_TYPE_SYMBOL);
   /* Also do the stuff which must be set before the window exists.  */
-  x_default_parameter (f, parms, Qforeground_color, build_string ("black"),
+  x_default_parameter (f, parms, Qforeground_color,
+		       build_string ("mac:textColor"),
 		       "foreground", "Foreground", RES_TYPE_STRING);
-  x_default_parameter (f, parms, Qbackground_color, build_string ("white"),
+  x_default_parameter (f, parms, Qbackground_color,
+		       build_string ("mac:textBackgroundColor"),
 		       "background", "Background", RES_TYPE_STRING);
-  x_default_parameter (f, parms, Qmouse_color, build_string ("black"),
+  x_default_parameter (f, parms, Qmouse_color,
+		       build_string ("mac:textColor"),
 		       "pointerColor", "Foreground", RES_TYPE_STRING);
   x_default_parameter (f, parms, Qborder_color, build_string ("black"),
 		       "borderColor", "BorderColor", RES_TYPE_STRING);
@@ -2440,6 +2439,30 @@ x_focus_frame (struct frame *f)
 }
 
 
+DEFUN ("mac-color-list-alist", Fmac_color_list_alist, Smac_color_list_alist,
+       0, 0, 0,
+  doc: /* Return the available combinations of color list names and color names.
+The value is an alist of COLOR-LIST-NAMEs vs lists of COLOR-NAMEs.
+Using these names, a color can be specified as \"mac:COLOR-NAME\" or
+\"mac:COLOR-LIST-NAME:COLOR-NAME\".  The former form is a shorthand
+for \"mac:System:COLOR-NAME\".
+
+Some combinations may represent image patterns rather than colors.
+For such cases, `(color-values \"mac:COLOR-LIST-NAME:COLOR-NAME\")'
+will return nil.  */)
+  (void)
+{
+  Lisp_Object result;
+
+  check_window_system (NULL);
+
+  block_input ();
+  result = mac_color_list_alist ();
+  unblock_input ();
+
+  return result;
+}
+
 DEFUN ("xw-color-defined-p", Fxw_color_defined_p, Sxw_color_defined_p, 1, 2, 0,
        doc: /* Internal function called by `color-defined-p', which see.
 \(Note that the Nextstep version of this function ignores FRAME.)  */)
@@ -4526,6 +4549,9 @@ The result is a property list containing the following names and values:
     Non-nil means the application is active.
 `:hidden-p'
     Non-nil means the application is hidden.
+`:appearance' (only on macOS 10.14 and later)
+    String representing the global appearance.
+    Examples: \"NSAppearanceNameAqua\" and \"NSAppearanceNameDarkAqua\".
 
 If Emacs is not running as a GUI application, then the result is nil.  */)
   (void)
@@ -4894,6 +4920,7 @@ syms_of_macfns (void)
   DEFSYM (QCicon_image_file, ":icon-image-file");
   DEFSYM (QCactive_p, ":active-p");
   DEFSYM (QChidden_p, ":hidden-p");
+  DEFSYM (QCappearance, ":appearance");
   DEFSYM (QCoverview_visible_p, ":overview-visible-p");
   DEFSYM (QCtab_bar_visible_p, ":tab-bar-visible-p");
   DEFSYM (QCselected_frame, ":selected-frame");
@@ -5015,6 +5042,7 @@ Chinese, Japanese, and Korean.  */);
 
   defsubr (&Sxw_display_color_p);
   defsubr (&Sx_display_grayscale_p);
+  defsubr (&Smac_color_list_alist);
   defsubr (&Sxw_color_defined_p);
   defsubr (&Sxw_color_values);
   defsubr (&Sx_server_max_request_size);
