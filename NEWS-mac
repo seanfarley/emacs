@@ -1,4 +1,35 @@
+* emacs-25.3-mac-6.11 (2019-04-14)
+
+** Fixed bugs
+
+*** SVG rendering via WebKit is slow if built on macOS 10.13 or later.
+Reported by Bibek Pokharel.
+
+*** Rare crash when popping up a dialog.
+
+*** Fail to insert Apple logo if mac-system-coding-system is mac-roman.
+
+*** The name attribute is missing in display-monitor-attributes-list
+if the display serial number value is negative in signed int.
+
+*** Candidates window for input methods is often misplaced.
+Add heuristics so it works in many cases including candidates windows
+popped up during isearch.
+We cannot make this placement strictly correct because of a timing
+problem: the system asks for the cursor position while there are still
+some pending Lisp events and the redisplay is not completed yet.
+
+** Improvements
+
+*** Update emoji data to UTS #51 version 12.0.
+
+*** Add stipple support.  The "@2x" file name convention and the
+`:data-2x' text property at the first byte of the data are also
+available to support optional 2x bitmaps for Retina display.
+
+
 * emacs-25.3-mac-6.10 (2018-10-24)
+https://lists.gnu.org/r/emacs-devel/2018-10/msg00439.html
 
 ** Fixed bugs
 

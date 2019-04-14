@@ -1,5 +1,5 @@
 /* Functions for GUI implemented with Cocoa AppKit on macOS.
-   Copyright (C) 2008-2018  YAMAMOTO Mitsuharu
+   Copyright (C) 2008-2019  YAMAMOTO Mitsuharu
 
 This file is part of GNU Emacs Mac port.
 
@@ -2393,15 +2393,26 @@ static CGRect unset_global_focus_view_frame (void);
 			change:(NSDictionaryOf (NSKeyValueChangeKey, id) *)change
 		       context:(void *)context
 {
+  BOOL updateOverlayViewParticipation = NO;
+
   if ([keyPath isEqualToString:@"sublayers"])
     {
       if ([change objectForKey:NSKeyValueChangeNotificationIsPriorKey])
 	[self synchronizeOverlayViewFrame];
       else
-	[self updateOverlayViewParticipation];
+	updateOverlayViewParticipation = YES;
     }
   else if ([keyPath isEqualToString:@"showingBorder"])
-    [self updateOverlayViewParticipation];
+    updateOverlayViewParticipation = YES;
+
+  if (updateOverlayViewParticipation)
+    {
+      if (!popup_activated ())
+	[self updateOverlayViewParticipation];
+      else
+	[self performSelector:@selector(updateOverlayViewParticipation)
+		   withObject:nil afterDelay:0];
+    }
 }
 
 - (void)setupWindow
@@ -5005,7 +5016,7 @@ mac_cursor_create (ThemeCursor shape, const XColor *fore_color,
 	  gcontext = [NSGraphicsContext graphicsContextWithGraphicsPort:context
 								flipped:NO];
 #endif
-	  [NSGraphicsContext setCurrentContext:gcontext];
+	  NSGraphicsContext.currentContext = gcontext;
 	  [rep draw];
 	  [NSGraphicsContext restoreGraphicsState];
 	  for (i = 0; i < width * height; i++)
@@ -6075,18 +6086,41 @@ event_phase_to_symbol (NSEventPhase phase)
   return result;
 }
 
+static bool
+mac_ts_active_input_string_in_echo_area_p (struct frame *f)
+{
+  Lisp_Object val = buffer_local_value (intern ("isearch-mode"),
+					XWINDOW (f->selected_window)->contents);
+
+  if (!(NILP (val) || EQ (val, Qunbound)))
+    return true;
+
+  if (OVERLAYP (Vmac_ts_active_input_overlay)
+      && !NILP (Foverlay_get (Vmac_ts_active_input_overlay, Qbefore_string)))
+    return false;
+
+  for (Lisp_Object msg = current_message (); STRINGP (msg);
+       msg = Fget_text_property (make_number (0), Qdisplay, msg))
+    if (!NILP (Fget_text_property (make_number (0), Qmac_ts_active_input_string,
+				   msg))
+	|| !NILP (Fnext_single_property_change (make_number (0),
+						Qmac_ts_active_input_string,
+						msg, Qnil)))
+      return true;
+
+  return false;
+}
+
 - (NSRect)firstRectForCharacterRange:(NSRange)aRange
 			 actualRange:(NSRangePointer)actualRange
 {
   NSRect rect = NSZeroRect;
   struct frame *f = NULL;
   struct window *w;
-  struct glyph *glyph;
-  struct glyph_row *row;
-  NSRange markedRange = [self markedRange];
+  NSRange markedRange = self.markedRange;
 
   if (aRange.location >= NSNotFound
-      || ([self hasMarkedText]
+      || (self.hasMarkedText
 	  && NSEqualRanges (NSUnionRange (markedRange, aRange), markedRange)))
     {
       /* Probably asking the location of the marked text.  Strictly
@@ -6096,16 +6130,12 @@ event_phase_to_symbol (NSEventPhase phase)
 	 called before displaying the marked text.
 
 	 We return the current cursor position either in the selected
-	 window or in the echo area as an approximate value.  We first
-	 try the echo area when Vmac_ts_active_input_overlay doesn't
-	 have the before-string property, and if the cursor glyph is
-	 not found there, then return the cursor position of the
-	 selected window.  */
-      glyph = NULL;
-      if (!(OVERLAYP (Vmac_ts_active_input_overlay)
-	    && !NILP (Foverlay_get (Vmac_ts_active_input_overlay,
-				    Qbefore_string)))
-	  && WINDOWP (echo_area_window))
+	 window or in the echo area (during isearch, for example) as
+	 an approximate value.  */
+      struct glyph *glyph = NULL;
+
+      if (WINDOWP (echo_area_window)
+	  && mac_ts_active_input_string_in_echo_area_p (self.emacsFrame))
 	{
 	  w = XWINDOW (echo_area_window);
 	  f = WINDOW_XFRAME (w);
@@ -6113,15 +6143,16 @@ event_phase_to_symbol (NSEventPhase phase)
 	}
       if (glyph == NULL)
 	{
-	  f = [self emacsFrame];
+	  f = self.emacsFrame;
 	  w = XWINDOW (f->selected_window);
 	  glyph = get_phys_cursor_glyph (w);
 	}
       if (glyph)
 	{
 	  int x, y, h;
+	  struct glyph_row *row = MATRIX_ROW (w->current_matrix,
+					      w->phys_cursor.vpos);
 
-	  row = MATRIX_ROW (w->current_matrix, w->phys_cursor.vpos);
 	  get_phys_cursor_geometry (w, row, glyph, &x, &y, &h);
 
 	  rect = NSMakeRect (x, y, w->phys_cursor_width, h);
@@ -6131,7 +6162,7 @@ event_phase_to_symbol (NSEventPhase phase)
     }
   else
     {
-      f = [self emacsFrame];
+      f = self.emacsFrame;
       w = XWINDOW (f->selected_window);
 
       /* Are we in a window whose display is up to date?
@@ -6799,20 +6830,20 @@ mac_display_copy_info_dictionary_for_cgdisplay (CGDirectDisplayID displayID,
 
   val = CGDisplayVendorNumber (displayID);
   if (val != kDisplayVendorIDUnknown && val != 0xFFFFFFFF)
-    /* We could simply write `info[@kDisplayVendorID] = @(val)' here
-       if we could restrict ourselves to 64-bit executables.  */
-    [info setObject:[NSNumber numberWithUnsignedInt:val]
-	     forKey:@kDisplayVendorID];
+    /* According to IODisplayLib.c in IOKitUser, a dictionary created
+       with IODisplayCreateInfoDictionary maps the kDisplayVendorID
+       (or kDisplayProductID, kDisplaySerialNumber) key to a SInt32
+       value, whereas the return type of CGDisplayVendorNumber (or
+       CGDisplayModelNumber, CGDisplaySerialNumber) is uint32_t.  */
+    [info setObject:[NSNumber numberWithInt:val] forKey:@kDisplayVendorID];
 
   val = CGDisplayModelNumber (displayID);
   if (val != kDisplayProductIDGeneric && val != 0xFFFFFFFF)
-    [info setObject:[NSNumber numberWithUnsignedInt:val]
-	     forKey:@kDisplayProductID];
+    [info setObject:[NSNumber numberWithInt:val] forKey:@kDisplayProductID];
 
   val = CGDisplaySerialNumber (displayID);
   if (val != 0x00000000 && val != 0xFFFFFFFF)
-    [info setObject:[NSNumber numberWithUnsignedInt:val]
-	     forKey:@kDisplaySerialNumber];
+    [info setObject:[NSNumber numberWithInt:val] forKey:@kDisplaySerialNumber];
 
   [infoDictionaries enumerateObjectsUsingBlock:
 		      ^(NSDictionary *dictionary, NSUInteger idx, BOOL *stop) {
@@ -10514,14 +10545,14 @@ create_and_show_dialog (struct frame *f, widget_value *first_wv)
     {
       NSView *view = [views objectAtIndex:i++];
       NSRect rect = [view visibleRect];
+      NSGraphicsContext *gcontext = NSGraphicsContext.currentContext;
       NSAffineTransform *transform = [NSAffineTransform transform];
 
-      [NSGraphicsContext saveGraphicsState];
+      [gcontext saveGraphicsState];
       [transform translateXBy:(- NSMinX (rect)) yBy:(y - NSMinY (rect))];
       [transform concat];
-      [view displayRectIgnoringOpacity:rect
-			     inContext:[NSGraphicsContext currentContext]];
-      [NSGraphicsContext restoreGraphicsState];
+      [view displayRectIgnoringOpacity:rect inContext:gcontext];
+      [gcontext restoreGraphicsState];
       y += NSHeight ([view visibleRect]);
     }
 }
@@ -12073,14 +12104,14 @@ mac_osa_script (Lisp_Object code_or_file, Lisp_Object compiled_p_or_language,
   [transform scaleBy:scaleFactor];
   [transform translateXBy:(- NSMinX (rect)) yBy:(- NSMinY (rect))];
   [NSGraphicsContext saveGraphicsState];
-  [NSGraphicsContext setCurrentContext:gcontext];
+  NSGraphicsContext.currentContext = gcontext;
   [transform concat];
   if (!(self.isOpaque && NSContainsRect (self.bounds, rect)))
     {
-      [NSGraphicsContext saveGraphicsState];
+      [gcontext saveGraphicsState];
       [(color ? color : [NSColor clearColor]) set];
       NSRectFill (rect);
-      [NSGraphicsContext restoreGraphicsState];
+      [gcontext restoreGraphicsState];
     }
 #if WK_API_ENABLED && MAC_OS_X_VERSION_MIN_REQUIRED >= 101300
   if ([self isKindOfClass:[WKWebView class]])
@@ -12206,28 +12237,43 @@ mac_osa_script (Lisp_Object code_or_file, Lisp_Object compiled_p_or_language,
       int width = -1, height;
       CGFloat scaleFactor;
 #if WK_API_ENABLED && MAC_OS_X_VERSION_MIN_REQUIRED >= 101300
-      WKWebViewConfiguration *configuration =
-	[[WKWebViewConfiguration alloc] init];
-      WKWebView *webView = [[WKWebView alloc] initWithFrame:frameRect
-					      configuration:configuration];
+      static WKWebView *webView;
 
-      MRC_RELEASE (configuration);
-      webView.navigationDelegate = self;
+      if (!webView)
+	{
+	  WKWebViewConfiguration *configuration =
+	    [[WKWebViewConfiguration alloc] init];
+
+	  configuration.suppressesIncrementalRendering = YES;
+	  webView = [[WKWebView alloc] initWithFrame:frameRect
+				       configuration:configuration];
+	  MRC_RELEASE (configuration);
+	}
+      else
+	webView.frame = frameRect;
+#define DELEGATE navigationDelegate
+      eassert (!webView.DELEGATE);
+      webView.DELEGATE = self;
       [webView loadData:data MIMEType:@"image/svg+xml"
 	       characterEncodingName:@"UTF-8" baseURL:url];
 #else
-      WebView *webView = [[WebView alloc] initWithFrame:frameRect
-					      frameName:nil groupName:nil];
-      WebFrame *mainFrame = [webView mainFrame];
+      static WebView *webView;
 
-      [[mainFrame frameView] setAllowsScrolling:NO];
+      if (!webView)
+	webView = [[WebView alloc] initWithFrame:frameRect frameName:nil
+				       groupName:nil];
+      else
+	webView.frame = frameRect;
+#define DELEGATE frameLoadDelegate
+      eassert (!webView.DELEGATE);
+      webView.DELEGATE = self;
+      webView.mainFrame.frameView.allowsScrolling = NO;
       [webView setValue:backgroundColor forKey:@"backgroundColor"];
-      [webView setFrameLoadDelegate:self];
-      [mainFrame loadData:data MIMEType:@"image/svg+xml" textEncodingName:nil
-		  baseURL:url];
+      [webView.mainFrame loadData:data MIMEType:@"image/svg+xml"
+		 textEncodingName:nil baseURL:url];
 #endif
 
-      /* [webView isLoading] is not sufficient if we have <image
+      /* webView.isLoading is not sufficient if we have <image
 	 xlink:href=... /> */
       while (!isLoaded)
 	mac_run_loop_run_once (0);
@@ -12290,8 +12336,8 @@ JSON.stringify (['width', 'height'].reduce				\
 	    }
 #else
 	  WebScriptObject *rootElement =
-	    [[webView windowScriptObject]
-	      valueForKeyPath:@"document.rootElement"];
+	    [webView.windowScriptObject
+		valueForKeyPath:@"document.rootElement"];
 
 	  boundingBox = [rootElement callWebScriptMethod:@"getBBox"
 					   withArguments:[NSArray array]];
@@ -12311,14 +12357,14 @@ JSON.stringify (['width', 'height'].reduce				\
 
       if (width < 0)
 	{
-	  MRC_RELEASE (webView);
+	  webView.DELEGATE = nil;
 	  (*imageErrorFunc) ("Error reading SVG image `%s'", emacsImage->spec);
 	  result = 0;
 
 	  return;
 	}
 
-      [webView setFrame:frameRect];
+      webView.frame = frameRect;
       frameRect.size.width = width;
       frameRect.origin.y = NSHeight (frameRect) - height;
       frameRect.size.height = height;
@@ -12338,7 +12384,7 @@ JSON.stringify (['width', 'height'].reduce				\
 
       if (!(*checkImageSizeFunc) (emacsFrame, width, height))
 	{
-	  MRC_RELEASE (webView);
+	  webView.DELEGATE = nil;
 	  (*imageErrorFunc) ("Invalid image size (see `max-image-size')");
 
 	  result = 0;
@@ -12350,7 +12396,8 @@ JSON.stringify (['width', 'height'].reduce				\
       emacsImage->pixmap = [webView createXImageFromRect:frameRect
 					 backgroundColor:backgroundColor
 					     scaleFactor:scaleFactor];
-      MRC_RELEASE (webView);
+      webView.DELEGATE = nil;
+#undef DELEGATE
 
       result = 1;
     });
@@ -12544,7 +12591,7 @@ static NSDate *documentRasterizerCacheOldestTimestamp;
 	[NSGraphicsContext graphicsContextWithGraphicsPort:ctx flipped:NO];
 
       [NSGraphicsContext saveGraphicsState];
-      [NSGraphicsContext setCurrentContext:gcontext];
+      NSGraphicsContext.currentContext = gcontext;
       [transform translateXBy:(NSMinX (rect)) yBy:(NSMinY (rect))];
       [transform scaleXBy:(NSWidth (rect) / width)
 		      yBy:(NSHeight (rect) / height)];
@@ -12790,7 +12837,7 @@ static NSDate *documentRasterizerCacheOldestTimestamp;
 #endif
 
   [NSGraphicsContext saveGraphicsState];
-  [NSGraphicsContext setCurrentContext:gcontext];
+  NSGraphicsContext.currentContext = gcontext;
   [transform translateXBy:(NSMinX (rect)) yBy:(NSMaxY (rect))];
   [transform scaleXBy:(NSWidth (rect) / containerSize.width)
 		  yBy:(- NSHeight (rect) / containerSize.height)];
