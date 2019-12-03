@@ -81,6 +81,7 @@ struct macfont_info
   unsigned spacing : 2;
   unsigned antialias : 2;
   bool_bf color_bitmap_p : 1;
+  bool_bf svg_p : 1;
 };
 
 /* Values for the `spacing' member in `struct macfont_info'.  */
@@ -1734,6 +1735,7 @@ static Lisp_Object macfont_shape (Lisp_Object);
 static int macfont_variation_glyphs (struct font *, int c,
                                      unsigned variations[256]);
 static void macfont_filter_properties (Lisp_Object, Lisp_Object);
+static Lisp_Object macfont_combining_capability (struct font *);
 
 static struct font_driver macfont_driver =
   {
@@ -1763,6 +1765,8 @@ static struct font_driver macfont_driver =
     NULL,			/* check */
     macfont_variation_glyphs,
     macfont_filter_properties,
+    NULL, 			/* cached_font_ok */
+    macfont_combining_capability,
   };
 
 static Lisp_Object
@@ -2169,7 +2173,7 @@ macfont_supports_charset_and_languages_p (CTFontDescriptorRef desc,
               ptrdiff_t j;
 
               for (j = 0; j < ASIZE (chars); j++)
-                if (TYPE_RANGED_INTEGERP (UTF32Char, AREF (chars, j))
+                if (RANGED_INTEGERP (0, AREF (chars, j), MAX_UNICODE_CHAR)
                     && CFCharacterSetIsLongCharacterMember (desc_charset,
                                                             XFASTINT (AREF (chars, j))))
                   break;
@@ -2713,6 +2717,16 @@ macfont_open (struct frame * f, Lisp_Object entity, int pixel_size)
   macfont_info->color_bitmap_p = 0;
   if (sym_traits & kCTFontTraitColorGlyphs)
     macfont_info->color_bitmap_p = 1;
+  CFArrayRef tags = CTFontCopyAvailableTables (macfont,
+					       kCTFontTableOptionNoOptions);
+  macfont_info->svg_p = 0;
+  if (tags)
+    {
+      if (CFArrayContainsValue (tags, CFRangeMake (0, CFArrayGetCount (tags)),
+				(const void *) (uintptr_t) kCTFontTableSVG))
+	macfont_info->svg_p = 1;
+      CFRelease (tags);
+    }
 
   glyph = macfont_get_glyph_for_character (font, ' ');
   if (glyph != kCGFontIndexInvalid)
@@ -2815,6 +2829,9 @@ macfont_has_char (Lisp_Object font, int c)
 {
   int result;
   CFCharacterSetRef charset;
+
+  if (c < 0 || c > MAX_UNICODE_CHAR)
+    return false;
 
   block_input ();
   if (FONT_ENTITY_P (font))
@@ -2979,7 +2996,7 @@ macfont_draw (struct glyph_string *s, int from, int to, int x, int y,
       CGContextSetTextPosition (context, text_position.x, text_position.y);
 
 #if MAC_OS_X_VERSION_MAX_ALLOWED >= 1070
-      if (macfont_info->color_bitmap_p
+      if ((macfont_info->color_bitmap_p || macfont_info->svg_p)
 #if MAC_OS_X_VERSION_MIN_REQUIRED < 1070
 	  && CTFontDrawGlyphs != NULL
 #endif
@@ -3640,6 +3657,12 @@ macfont_variation_glyphs (struct font *font, int c, unsigned variations[256])
   unblock_input ();
 
   return n;
+}
+
+static Lisp_Object
+macfont_combining_capability (struct font *font)
+{
+  return Qt;
 }
 
 static const char *const macfont_booleans[] = {

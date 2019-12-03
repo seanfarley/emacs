@@ -1229,6 +1229,12 @@ static bool mac_run_loop_running_once_p;
       [[NSUserDefaults standardUserDefaults] registerDefaults:appDefaults];
     }
 
+#if MAC_OS_X_VERSION_MAX_ALLOWED >= 101500
+  /* Work around animation effect glitches for executables linked on
+     macOS 10.15.  */
+  setenv ("CAVIEW_USE_GL", "1", 0);
+#endif
+
   /* Exit from the main event loop.  */
   [NSApp stop:nil];
   [NSApp postDummyEvent];
@@ -2215,16 +2221,40 @@ static CGRect unset_global_focus_view_frame (void);
 		 to:nil from:sender];
 }
 
+- (NSWindow *)tabPickerWindow
+{
+  /* The tab group overview is displayed in NSTabPickerWindow on macOS
+     10.15, and -[NSWindowTabGroup isOverviewVisible] returns NO while
+     exiting from the overview.  */
+  if (!(floor (NSAppKitVersionNumber) <= NSAppKitVersionNumber10_14))
+    {
+      NSWindowTabGroup *tabGroup = self.tabGroup;
+
+      if (tabGroup)
+	{
+	  NSArrayOf (NSWindow *) *windowsInTabGroup = tabGroup.windows;
+
+	  for (NSWindow *window in [NSApp windows])
+	    if (window.isVisible
+		&& [window.tabGroup isEqual:tabGroup]
+		&& ![windowsInTabGroup containsObject:window])
+	      return window;
+	}
+    }
+
+  return nil;
+}
+
 - (void)exitTabGroupOverview
 {
   if ([self respondsToSelector:@selector(tabGroup)])
     {
       NSWindowTabGroup *tabGroup = self.tabGroup;
 
-      if (tabGroup.isOverviewVisible)
+      if (tabGroup.isOverviewVisible || self.tabPickerWindow)
 	{
 	  tabGroup.overviewVisible = NO;
-	  while (tabGroup.isOverviewVisible)
+	  while (tabGroup.isOverviewVisible || self.tabPickerWindow)
 	    mac_run_loop_run_once (kEventDurationForever);
 	}
     }
@@ -2378,10 +2408,7 @@ static CGRect unset_global_focus_view_frame (void);
       if (emacsView.layer)
 	[emacsWindow.contentView addSubview:overlayView];
       else if (!(floor (NSAppKitVersionNumber) <= NSAppKitVersionNumber10_13))
-	{
-	  if (![overlayView.superview isEqual:emacsView])
-	    [emacsView addSubview:overlayView];
-	}
+	[emacsView addSubview:overlayView];
       else
 	[emacsWindow.contentView addSubview:overlayView positioned:NSWindowBelow
 				 relativeTo:emacsView];
@@ -3159,11 +3186,16 @@ static CGRect unset_global_focus_view_frame (void);
   mac_handle_visibility_change (f);
 }
 
+/* We used to update the presentation options for the key window here.
+   But it makes application switching impossible in Split View on
+   macOS 10.14 and later.  */
+#if 0
 - (void)windowDidChangeScreen:(NSNotification *)notification
 {
   if ([emacsWindow isKeyWindow])
     [emacsController updatePresentationOptions];
 }
+#endif
 
 - (void)windowDidChangeBackingProperties:(NSNotification *)notification
 {
@@ -3592,7 +3624,11 @@ static CGRect unset_global_focus_view_frame (void);
 
 - (void)setupLiveResizeTransition
 {
-  if (liveResizeCompletionHandler == nil && [emacsWindow isMainWindow])
+  if (liveResizeCompletionHandler == nil
+      /* Resizing in Split View on macOS 10.15 no longer
+	 scale-and-blurs non-main window.  */
+      && (!(floor (NSAppKitVersionNumber) <= NSAppKitVersionNumber10_14)
+	  || emacsWindow.isMainWindow))
     {
       EmacsFrameController * __unsafe_unretained weakSelf = self;
       CALayer *layer =
@@ -4064,6 +4100,10 @@ mac_bring_frame_window_to_front_and_activate (struct frame *f, bool activate_p)
     {
       NSWindowTabbingMode tabbingMode = NSWindowTabbingModeAutomatic;
       NSWindow *mainWindow = [NSApp mainWindow];
+      if ([mainWindow respondsToSelector:@selector(tabGroup)]
+	  && mainWindow.tabGroup
+	  && ![mainWindow.tabGroup.windows containsObject:mainWindow])
+	mainWindow = mainWindow.tabGroup.selectedWindow;
 
       if (!FRAME_TOOLTIP_P (f)
 	  && [window respondsToSelector:@selector(setTabbingMode:)]
@@ -4515,8 +4555,8 @@ mac_set_tab_group_frames (struct frame *f, Lisp_Object value)
 	      [window addTabbedWindow:addedWindow ordered:NSWindowAbove];
 	    }
 	}
-      mac_set_tab_group_selected_frame (XFRAME (selected), selected);
     });
+  mac_set_tab_group_selected_frame (XFRAME (selected), selected);
 
   return Qt;
 }
@@ -5604,6 +5644,11 @@ event_phase_to_symbol (NSEventPhase phase)
 - (void)smartMagnifyWithEvent:(NSEvent *)event
 {
   [self scrollWheel:event];
+}
+
+- (void)changeModeWithEvent:(NSEvent *)event
+{
+  [NSApp sendAction:(NSSelectorFromString (@"change-mode:")) to:nil from:nil];
 }
 
 - (void)mouseMoved:(NSEvent *)theEvent
@@ -9396,6 +9441,12 @@ static void mac_fake_menu_bar_click (EventPriority);
 
 static NSString *localizedMenuTitleForEdit, *localizedMenuTitleForHelp;
 
+/* Maximum interval time in seconds between key down and modifier key
+   release events when they are recognized part of a synthetic
+   modified key (e.g., three-finger editing gestures in Sidecar)
+   rather than that of a physical key stroke.  */
+#define SYNTHETIC_MODIFIED_KEY_MAX_INTERVAL (1 / 600.0)
+
 @implementation NSMenu (Emacs)
 
 /* Create a new menu item using the information in *WV (except
@@ -9549,6 +9600,61 @@ static NSString *localizedMenuTitleForEdit, *localizedMenuTitleForHelp;
 	      [NSApp sendAction:@selector(copy:) to:nil from:nil];
 
 	      return YES;
+	    }
+
+	  if (theEvent.type == NSEventTypeKeyDown)
+	    {
+	      SEL action = NULL;
+	      NSEventModifierFlags modifierFlags =
+		(theEvent.modifierFlags
+		 & NSEventModifierFlagDeviceIndependentFlagsMask);
+
+	      switch (theEvent.keyCode)
+		{
+		case kVK_ANSI_Z:
+		  if (modifierFlags == NSEventModifierFlagCommand)
+		    action = NSSelectorFromString (@"synthetic-undo:");
+		  else if (modifierFlags == (NSEventModifierFlagCommand
+					     | NSEventModifierFlagShift))
+		    action = NSSelectorFromString (@"synthetic-redo:");
+		  break;
+
+		case kVK_ANSI_X:
+		  if (modifierFlags == NSEventModifierFlagCommand)
+		    action = NSSelectorFromString (@"synthetic-cut:");
+		  break;
+
+		case kVK_ANSI_C:
+		  if (modifierFlags == NSEventModifierFlagCommand)
+		    action = NSSelectorFromString (@"synthetic-copy:");
+		  break;
+
+		case kVK_ANSI_V:
+		  if (modifierFlags == NSEventModifierFlagCommand)
+		    action = NSSelectorFromString (@"synthetic-paste:");
+		  break;
+		}
+	      if (action)
+		{
+		  EventRef event = mac_peek_next_event ();
+
+		  if (event)
+		    {
+		      OSType event_class = GetEventClass (event);
+		      UInt32 event_kind = GetEventKind (event);
+		      EventTime event_time = GetEventTime (event);
+
+		      if (event_class == kEventClassKeyboard
+			  && event_kind == kEventRawKeyModifiersChanged
+			  && (event_time - theEvent.timestamp
+			      <= SYNTHETIC_MODIFIED_KEY_MAX_INTERVAL))
+			{
+			  [NSApp sendAction:action to:nil from:nil];
+
+			  return YES;
+			}
+		    }
+		}
 	    }
 
 	  /* Note: this is not necessary for binaries built on Mac OS
@@ -12113,7 +12219,7 @@ mac_osa_script (Lisp_Object code_or_file, Lisp_Object compiled_p_or_language,
       NSRectFill (rect);
       [gcontext restoreGraphicsState];
     }
-#if WK_API_ENABLED && MAC_OS_X_VERSION_MIN_REQUIRED >= 101300
+#ifdef USE_WK_API
   if ([self isKindOfClass:[WKWebView class]])
     {
       WKWebView *webView = (WKWebView *) self;
@@ -12236,7 +12342,7 @@ mac_osa_script (Lisp_Object code_or_file, Lisp_Object compiled_p_or_language,
       NSRect frameRect = NSMakeRect (0, 0, 100, 100); /* Adjusted later.  */
       int width = -1, height;
       CGFloat scaleFactor;
-#if WK_API_ENABLED && MAC_OS_X_VERSION_MIN_REQUIRED >= 101300
+#ifdef USE_WK_API
       static WKWebView *webView;
 
       if (!webView)
@@ -12281,7 +12387,7 @@ mac_osa_script (Lisp_Object code_or_file, Lisp_Object compiled_p_or_language,
       @try
 	{
 	  id boundingBox, widthBaseVal, heightBaseVal;
-#if WK_API_ENABLED && MAC_OS_X_VERSION_MIN_REQUIRED >= 101300
+#ifdef USE_WK_API
 	  NSString * __block jsonString;
 	  BOOL __block finished = NO;
 	  CGFloat components[4];
@@ -12405,7 +12511,7 @@ JSON.stringify (['width', 'height'].reduce				\
   return result;
 }
 
-#if WK_API_ENABLED && MAC_OS_X_VERSION_MIN_REQUIRED >= 101300
+#ifdef USE_WK_API
 - (void)webView:(WKWebView *)webView didFinishNavigation:(WKNavigation *)navigation;
 {
   isLoaded = YES;
@@ -12422,7 +12528,7 @@ JSON.stringify (['width', 'height'].reduce				\
 bool
 mac_webkit_supports_svg_p (void)
 {
-#if WK_API_ENABLED && MAC_OS_X_VERSION_MIN_REQUIRED >= 101300
+#ifdef USE_WK_API
   return true;
 #else
   bool result;
@@ -14098,7 +14204,7 @@ mac_start_animation (Lisp_Object frame_or_window, Lisp_Object properties)
 
     case ANIM_TYPE_TRANSITION_FILTER:
       {
-	CATransition *transition = [[CATransition alloc] init];
+	CATransition *transition = CATransition.animation;
 	NSMutableDictionaryOf (NSString *, id <CAAction>) *actions;
 	CALayer *newContentLayer;
 
@@ -14109,7 +14215,6 @@ mac_start_animation (Lisp_Object frame_or_window, Lisp_Object properties)
 	actions = [NSMutableDictionary
 		    dictionaryWithDictionary:[layer actions]];
 	[actions setObject:transition forKey:@"sublayers"];
-	MRC_RELEASE (transition);
 	layer.actions = actions;
 
 	newContentLayer = [CALayer layer];

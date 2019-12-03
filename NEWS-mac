@@ -1,4 +1,46 @@
+* emacs-25.3-mac-6.12 (2019-12-03)
+
+** Fixed bugs
+
+*** Dired on non-ASCII directories may cause error if
+file-name-coding-system set to utf-8-hfs-unix.
+Reported by Sungbin Jo.
+This is a regression introduced in 6.9.
+
+*** (set-mouse-color "black") on Dark Mode makes the mouse pointer
+invisible.
+
+*** mac-auto-operator-composition-mode does not compose sequences
+containing "\".
+
+*** Several animation effect glitches for executables linked on 10.15.
+
+*** Can't switch application in Split View after resizing on macOS
+10.14 and later.
+
+*** Clicking "+" in tab group overview creates a new frame instead of
+tab on macOS 10.15.
+
+*** Mouse pointer color is inverted on Dark Mode.
+
+** Improvements
+
+*** OpenType-SVG color fonts are drawn on macOS 10.14 and later.
+
+*** New configure option --enable-mac-self-contained to have "make
+install" create a self-contained bundle under the "mac" subdirectory.
+(or the directory specified by --enable-mac-app[=DIR]).  The default
+is off.
+Contributed by Xin Xu.
+
+*** Resize transition is also in effect for unfocused frames in Split
+View on macOS 10.15.
+
+*** Recognize three-finger editing gestures in Sidecar on macOS 10.15.
+
+
 * emacs-25.3-mac-6.11 (2019-04-14)
+https://lists.gnu.org/r/emacs-devel/2019-04/msg00582.html
 
 ** Fixed bugs
 
