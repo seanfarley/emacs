@@ -1,0 +1,77 @@
+(added for code hosting)
+
+* Motivation
+This is a WIP branch of emacs that adds support for content blocking,
+e.g. blocks loading external resources in WebKit. The primary
+motivation for me is to block privacy tracking images from my
+email. *Currently, this only works on MacOS* since that's all I
+really have access to; help for making this work on GTK WebKit would
+be awesome.
+
+Expect this to be constantly rebased!
+
+* TODOs
+- [ ] Check if I correctly cleaned up C memory
+- [ ] Add GTK version
+- [ ] Sign FSF paperwork, if need be
+- [ ] Discuss API design of passing a new parameter for content rules
+Should we put this in =args= instead of a new function parameter? Or
+maybe we should restrict the API to just be a boolean of block/don't
+block?
+- [ ] Implement a 'remove content blocker rules and reload' function
+This is a bit blocked by the above.
+
+* mu4e example
+This is the current way I'm using this in mu4e:
+
+#+BEGIN_SRC emacs-lisp
+;; add support for xwidgets if available
+(when (featurep 'xwidget-internal)
+  (defun smf/mu4e-action-view-with-xwidget (msg)
+    "View the body of MSG inside xwidget-webkit.
+This is only available in Emacs 25+; also see the discussion of
+privacy aspects in `(mu4e) Displaying rich-text messages'."
+    (unless (fboundp 'xwidget-webkit-browse-url)
+      (mu4e-error "No xwidget support available"))
+    (xwidget-webkit-browse-url-block-ext ;; blocks external resources
+     (concat "file://" (mu4e~write-body-to-html msg)) t))
+
+  (add-to-list 'mu4e-view-actions
+               '("xViewXWidget" . smf/mu4e-action-view-with-xwidget) t))
+
+#+END_SRC
+
+Or you can be even more fancy and use =cl-flet=
+
+#+BEGIN_SRC emacs-lisp
+(defun smf/mu4e-block-content (orig-fn &rest args)
+  (cl-letf* ((old-xwidget-webkit-browse-url
+              (symbol-function 'xwidget-webkit-browse-url))
+             ((symbol-function 'xwidget-webkit-browse-url)
+              (lambda (url &optional new-session &rest _ignore)
+                (funcall old-xwidget-webkit-browse-url url new-session t)))
+             (old-xwidget-webkit-goto-url
+              (symbol-function 'xwidget-webkit-goto-url))
+             ((symbol-function 'xwidget-webkit-goto-url)
+              (lambda (url &optional block-content)
+                (funcall old-xwidget-webkit-goto-url url t))))
+    (apply orig-fn args)))
+
+(advice-add #'mu4e-action-view-with-xwidget :around #'smf/mu4e-block-content)
+(add-to-list 'mu4e-view-actions '("xWidget" . mu4e-action-view-with-xwidget) t)
+#+END_SRC
+
+* State
+This current state is "works for me."
+
+Before the patch
+
+#+CAPTION: Before the patch
+#+NAME:   fig:before-patch
+[[./before-patch.png]]
+
+After the patch
+
+#+CAPTION: After the patch
+#+NAME:   fig:after-patch
+[[./after-patch.png]]
