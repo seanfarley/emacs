@@ -53,6 +53,11 @@ struct xwidget
   /* A title used for button labels, for instance.  */
   Lisp_Object title;
 
+  /* Block content filter rules (string) used for disabling network
+     calls for local html files (aka disable privacy tracking images),
+     for instance.  */
+  Lisp_Object bcontent;
+
   /* Vector of currently executing scripts with callbacks.  */
   Lisp_Object script_callbacks;
   /* Here ends the Lisp part.  script_callbacks is the marker field.  */

@@ -464,6 +464,45 @@ nsxwidget_init(struct xwidget *xw)
                          xwidget:xw];
   xw->xwWindow = [[XwWindow alloc]
                    initWithFrame:rect];
+
+  if (!NILP (xw->bcontent)) {
+    message ("leeroy jennnnnkinssss: %s", SSDATA (xw->bcontent));
+
+    // id blockRules =
+    //   @"["
+    //   @"{"
+    //   @"    \"trigger\": {"
+    //   @"        \"url-filter\": \".*\""
+    //   @"    },"
+    //   @"    \"action\": {"
+    //   @"        \"type\": \"block\""
+    //   @"    }"
+    //   @"},"
+    //   @"{"
+    //   @"    \"trigger\": {"
+    //   @"        \"url-filter\": \"file://.*\""
+    //   @"    },"
+    //   @"    \"action\": {"
+    //   @"        \"type\": \"ignore-previous-rules\""
+    //   @"    }"
+    //   @"}"
+    //   @"]";
+    NSString *blockRules = [NSString stringWithUTF8String:SSDATA (xw->bcontent)];
+
+    [[WKContentRuleListStore defaultStore] compileContentRuleListForIdentifier: @"ContentBlockingRules" encodedContentRuleList:blockRules completionHandler:^(WKContentRuleList *contentRuleList, NSError *error) {
+        if (error != nil) {
+          NSString *msg = error.localizedDescription;
+          Lisp_Object lmsg = build_string_with_nsstr (msg);
+          message("Error building content filters = %s", SSDATA (lmsg));
+        }
+        else {
+          [[((XwWebView *) xw->xwWidget).configuration
+               userContentController] addContentRuleList:contentRuleList];
+        }
+      }];
+
+  }
+
   [xw->xwWindow addSubview:xw->xwWidget];
   xw->xv = NULL; /* for 1 to 1 relationship of webkit2.  */
   unblock_input ();

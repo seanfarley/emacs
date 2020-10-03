@@ -75,10 +75,12 @@ webkit_decide_policy_cb (WebKitWebView *,
 
 DEFUN ("make-xwidget",
        Fmake_xwidget, Smake_xwidget,
-       5, 6, 0,
+       5, 7, 0,
        doc: /* Make an xwidget of TYPE.
 If BUFFER is nil, use the current buffer.
 If BUFFER is a string and no such buffer exists, create it.
+If BCONTENT is a string, then send the string of block content
+            filters to the nsxwidget backend.
 TYPE is a symbol which can take one of the following values:
 
 - webkit
@@ -86,7 +88,7 @@ TYPE is a symbol which can take one of the following values:
 Returns the newly constructed xwidget, or nil if construction fails.  */)
   (Lisp_Object type,
    Lisp_Object title, Lisp_Object width, Lisp_Object height,
-   Lisp_Object arguments, Lisp_Object buffer)
+   Lisp_Object arguments, Lisp_Object buffer, Lisp_Object bcontent)
 {
 #ifdef USE_GTK
   if (!xg_gtk_initialized)
@@ -107,6 +109,13 @@ Returns the newly constructed xwidget, or nil if construction fails.  */)
   XSETXWIDGET (val, xw);
   Vxwidget_list = Fcons (val, Vxwidget_list);
   xw->plist = Qnil;
+
+  if (NILP (bcontent)) {
+    xw->bcontent = Qnil;
+  } else {
+    CHECK_STRING (bcontent);
+    xw->bcontent = ENCODE_FILE (bcontent);
+  }
 
 #ifdef USE_GTK
   xw->widgetwindow_osr = NULL;

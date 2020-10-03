@@ -58,14 +58,14 @@
   "Displaying native widgets in Emacs buffers."
   :group 'widgets)
 
-(defun xwidget-insert (pos type title width height &optional args)
+(defun xwidget-insert (pos type title width height &optional args block-content)
   "Insert an xwidget at position POS.
 Supply the xwidget's TYPE, TITLE, WIDTH, and HEIGHT.
 See `make-xwidget' for the possible TYPE values.
 The usage of optional argument ARGS depends on the xwidget.
 This returns the result of `make-xwidget'."
   (goto-char pos)
-  (let ((id (make-xwidget type title width height args)))
+  (let ((id (make-xwidget type title width height args nil block-content)))
     (put-text-property (point) (+ 1 (point))
                        'display (list 'xwidget ':xwidget id))
     id))
@@ -89,10 +89,12 @@ This returns the result of `make-xwidget'."
 (require 'url-handlers)
 
 ;;;###autoload
-(defun xwidget-webkit-browse-url (url &optional new-session)
+(defun xwidget-webkit-browse-url (url &optional new-session block-content)
   "Ask xwidget-webkit to browse URL.
 NEW-SESSION specifies whether to create a new xwidget-webkit session.
-Interactively, URL defaults to the string looking like a url around point."
+Interactively, URL defaults to the string looking like a url around point.
+
+BLOCK-CONTENT is either a bool or a string of content rules."
   (interactive (progn
                  (require 'browse-url)
                  (browse-url-interactive-arg "xwidget-webkit URL: "
@@ -105,8 +107,22 @@ Interactively, URL defaults to the string looking like a url around point."
     (unless (string-match "\\`[A-Za-z]+:" url)
       (setq url (concat "https://" url)))
     (if new-session
-        (xwidget-webkit-new-session url)
-      (xwidget-webkit-goto-url url))))
+        (xwidget-webkit-new-session url nil block-content)
+      (xwidget-webkit-goto-url url block-content))))
+
+;;;###autoload
+(defun xwidget-webkit-browse-url-block-ext (url &optional new-session)
+  "Ask xwidget-webkit to browse URL but block external resources.
+NEW-SESSION specifies whether to create a new xwidget-webkit session.
+
+Wrapper for `xwidget-webkit-browse-url' but blocks all external
+resources."
+  (interactive (progn
+                 (require 'browse-url)
+                 (browse-url-interactive-arg "xwidget-webkit URL: "
+                                             ;;(xwidget-webkit-current-url)
+                                             )))
+  (xwidget-webkit-browse-url url new-session t))
 
 (defun xwidget-webkit-clone-and-split-below ()
   "Clone current URL into a new widget place in new window below.
@@ -598,12 +614,34 @@ For example, use this to display an anchor."
   (add-to-list 'window-size-change-functions
                'xwidget-webkit-adjust-size-in-frame))
 
-(defun xwidget-webkit-new-session (url &optional callback)
-  "Create a new webkit session buffer with URL."
+(defun xwidget-webkit-new-session (url &optional callback block-content)
+  "Create a new webkit session buffer with URL.
+
+BLOCK-CONTENT is either a bool or a string of content rules."
   (let*
       ((bufname (generate-new-buffer-name "*xwidget-webkit*"))
        (callback (or callback #'xwidget-webkit-callback))
+       (default-bc (concat "[{"
+                           "    \"trigger\": {"
+                           "        \"url-filter\": \".*\""
+                           "    },"
+                           "    \"action\": {"
+                           "        \"type\": \"block\""
+                           "    }"
+                           "},"
+                           "{"
+                           "    \"trigger\": {"
+                           "        \"url-filter\": \"file://.*\""
+                           "    },"
+                           "    \"action\": {"
+                           "        \"type\": \"ignore-previous-rules\""
+                           "    }"
+                           "}]"))
        xw)
+    ;; Explicitly check for t equality so we can substitute the
+    ;; default blocking rules
+    (if (eq block-content t)
+        (setq block-content default-bc))
     (setq xwidget-webkit-last-session-buffer (switch-to-buffer
                                               (get-buffer-create bufname)))
     ;; The xwidget id is stored in a text property, so we need to have
@@ -615,18 +653,29 @@ For example, use this to display an anchor."
       (setq xw (xwidget-insert
                 start 'webkit bufname
                 (xwidget-window-inside-pixel-width (selected-window))
-                (xwidget-window-inside-pixel-height (selected-window)))))
+                (xwidget-window-inside-pixel-height (selected-window))
+                nil block-content)))
     (xwidget-put xw 'callback callback)
     (xwidget-webkit-mode)
     (xwidget-webkit-goto-uri (xwidget-webkit-last-session) url)))
 
 
-(defun xwidget-webkit-goto-url (url)
-  "Goto URL with xwidget webkit."
+(defun xwidget-webkit-goto-url (url &optional block-content)
+  "Goto URL with xwidget webkit.
+
+BLOCK-CONTENT is either a bool or a string of content rules."
   (if (xwidget-webkit-current-session)
       (progn
+        ;; FIXME ideally, we would pass `block-content' to the below function but I'm not sure yet
         (xwidget-webkit-goto-uri (xwidget-webkit-current-session) url))
-    (xwidget-webkit-new-session url)))
+    (xwidget-webkit-new-session url nil block-content)))
+
+(defun xwidget-webkit-goto-url-block-ext (url)
+  "Goto URL with xwidget webkit.
+
+A convenience wrapper for calling `xwidget-webkit-goto-url' and
+blocking all external resources."
+  (xwidget-webkit-goto-url url t))
 
 (defun xwidget-webkit-back ()
   "Go back to previous URL in xwidget webkit buffer."
