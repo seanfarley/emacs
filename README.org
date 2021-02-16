@@ -8,7 +8,10 @@ email. *Currently, this only works on MacOS* since that's all I
 really have access to; help for making this work on GTK WebKit would
 be awesome.
 
-Expect this to be constantly rebased!
++Expect this to be constantly rebased!+
+
+*While this is pretty neat, I don't have the time to work on finishing
+the linux branch of this.*
 
 * TODOs
 - [ ] Check if I correctly cleaned up C memory
