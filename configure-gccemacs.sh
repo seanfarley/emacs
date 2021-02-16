@@ -20,11 +20,12 @@ readonly SED_DIR="$(realpath $(brew --prefix)/opt/gnu-sed)"
 readonly GCC_INCLUDE_DIR=${GCC_DIR}/include
 [[ -d $GCC_INCLUDE_DIR ]] ||  { echo "${GCC_INCLUDE_DIR} not found"; exit 1; }
 
-readonly GCC_LIB_DIR=${GCC_DIR}/lib/gcc/10
+#readonly GCC_LIB_DIR=${GCC_DIR}/lib/gcc/10
+readonly GCC_LIB_DIR=$(realpath $(brew --prefix)/lib/gcc/10)
 [[ -d $GCC_LIB_DIR ]] ||  { echo "${GCC_LIB_DIR} not found"; exit 1; }
 
 export PATH="${SED_DIR}/libexec/gnubin:${PATH}"
-export CFLAGS="-I${GCC_INCLUDE_DIR}"
+export CFLAGS="-I/usr/local/include -I${GCC_INCLUDE_DIR}"
 export LDFLAGS="-L${GCC_LIB_DIR} -I${GCC_INCLUDE_DIR}"
 export DYLD_FALLBACK_LIBRARY_PATH="${GCC_LIB_DIR}"
 
